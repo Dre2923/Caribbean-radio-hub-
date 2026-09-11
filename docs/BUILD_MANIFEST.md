@@ -124,6 +124,18 @@ Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
 ## Front-End Design Direction (Step 40 and all UI work)
 
 - Fortune-500 / top-tier commercial standard.
+- **Built to the caliber of a top-tier, Ivy-League/master-level graphics
+  programmer, and to the same engineering bar as a top Google app
+  creator** — this is a standard on the *people/craft* level, not just a
+  visual style guide: production-grade native performance (smooth 60fps+
+  animation, no jank, no layout thrash), platform-idiomatic quality on
+  each target (Android/iOS/iPadOS/Windows), and the same rigor already
+  established for the backend (real due diligence, adversarial testing,
+  no shortcuts) applied to client code and graphics work too, not a lower
+  bar just because it's visual. Holds for every step in this section's
+  range and any other step that touches UI, animation, or client-side
+  graphics — not a one-time note that stops applying once Step 40 itself
+  is done.
 - Strong, animated interactive buttons and dropdown menus with real
   hover/pressed/loading/focus/disabled/error states.
 - Caribbean color palette: warm sunset tones, ocean blues/teals, vibrant
