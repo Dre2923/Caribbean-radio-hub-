@@ -89,16 +89,33 @@ multiple steps together without an explicit go-ahead each time.
   in scope (macOS deferred). Decisions in the backend (auth, data
   handling, HTTPS) need to hold up under each platform's own store
   requirements, not just "work in a browser."
-- **Self-healing wherever practical** — detect failures and recover or
-  clean up automatically rather than just crashing. Already in place:
-  `withTransaction` rolls back automatically on any write failure (Step 01);
-  the DB pool's `error` listener stops an idle-client error from crashing
-  the process (Step 01); `unhandledRejection`/`uncaughtException` handlers
-  log and shut down cleanly instead of hanging (Step 02); Fastify's global
-  error handler catches every request-level failure and always returns a
+- **Self-healing wherever practical, non-crashing as the baseline
+  expectation for every service/component ("container") in the system** —
+  detect failures and recover or clean up automatically rather than just
+  crashing, and treat comprehensive bug/error handling (every failure
+  class a component can hit — bad input, a dependency outage, a timeout,
+  an unexpected exception — not just the ones easy to anticipate) as
+  ongoing, continuous maintenance discipline, not a one-time pass to
+  close out a step and move on. Already in place: `withTransaction` rolls
+  back automatically on any write failure (Step 01); the DB pool's
+  `error` listener stops an idle-client error from crashing the process
+  (Step 01); `unhandledRejection`/`uncaughtException` handlers log and
+  shut down cleanly instead of hanging (Step 02); Fastify's global error
+  handler catches every request-level failure and always returns a
   response, never leaves a request hanging (Step 02/04). Apply the same
-  standard going forward: a component that can retry, roll back, or
-  degrade gracefully should, rather than propagating a hard crash.
+  standard going forward, to every future service/container this
+  platform adds: a component that can retry, roll back, or degrade
+  gracefully should, rather than propagating a hard crash — and re-check
+  this standard against everything already built, not just new work, the
+  same way the string-input-hygiene and adversarial-security audits
+  above re-checked earlier steps rather than only applying going forward.
+- **Consistent brand identity throughout** — every user-facing and
+  developer-facing surface this build produces (API docs/descriptions,
+  email templates, error messages, client UI, code comments/naming)
+  should read as one cohesive, deliberately-designed product, not generic
+  boilerplate or an unbranded template. Ties into the existing "avoid
+  generic templates" front-end guidance below, extended to the whole
+  build, not just visual UI.
 - **Every free-text string field is auto-trimmed of stray leading/trailing
   whitespace before it's validated or stored** — a copy-pasted value with
   accidental padding should validate and save cleanly, not fail a length
