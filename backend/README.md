@@ -66,6 +66,30 @@ npm run dev                   # starts the API on :3000
   `openssl rand -base64 48`.
 - **No email enumeration via login**: see `POST /auth/login` above.
 
+## Production deployment: HTTPS and TRUST_PROXY
+
+This API always speaks plain HTTP itself. In production it must be served
+behind something that terminates TLS in front of it — a load balancer,
+reverse proxy, or the hosting platform's own edge — so that every request
+from the Android/iOS/iPad/Windows clients travels over HTTPS end to end.
+This isn't optional: iOS's App Transport Security rejects plain-HTTP API
+calls by default, and it's the baseline expectation for handling user data
+(credentials, profiles) on every platform this ships to.
+
+Once it's behind that proxy, set `TRUST_PROXY` (see `.env.example`) to how
+many proxy hops are yours — e.g. `TRUST_PROXY=1` for a single load
+balancer. Without it, `request.ip` (what rate-limiting keys on) resolves to
+the proxy's address for every client instead of the real caller, silently
+merging every user into one shared rate-limit bucket. Verified manually:
+with `TRUST_PROXY` unset, spoofing `X-Forwarded-For` cannot bypass the
+login rate limit (still 429 on the 6th attempt regardless of the header);
+with `TRUST_PROXY=1`, distinct `X-Forwarded-For` values correctly get
+independent buckets. `tests/trustProxy.test.ts` covers the hop-counting
+logic itself (an off-by-one here would silently under- or over-trust).
+Never set `TRUST_PROXY=true` unless you've verified nothing but your own
+proxy can reach the app directly — it trusts client-supplied
+`X-Forwarded-*` headers unconditionally.
+
 ## Observability
 
 - **Structured logging**: a single shared `pino` instance (`src/utils/logger.ts`)

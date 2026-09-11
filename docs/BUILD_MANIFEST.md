@@ -24,6 +24,30 @@ multiple steps together without an explicit go-ahead each time.
 - Every database write requires error handling and rollback protection
   built in from the start.
 
+## Cross-Cutting Non-Negotiables (apply to every step, not a one-time task)
+
+- **Real, persistent database** — Postgres is the actual data store for
+  this platform, not a mock or a placeholder to swap out later. Every
+  step's data lives there, with the error-handling/rollback discipline
+  from Step 01 (`withTransaction`).
+- **HTTPS end-to-end, always** — this ships to Apple (iOS/iPadOS — App
+  Transport Security rejects plain HTTP by default), Android, and Windows.
+  The API always speaks plain HTTP internally; production deployment must
+  put a TLS-terminating proxy/load balancer/hosting edge in front of it,
+  and `TRUST_PROXY` must be configured for that deployment (see
+  `backend/README.md` → "Production deployment: HTTPS and TRUST_PROXY").
+  No client ships pointed at a plain-HTTP base URL.
+- **Real due diligence on user data security, every step** — not a
+  checklist pass at the end. Verify against a live server/database, not
+  just unit tests; look for what a config or a library's defaults get
+  wrong (e.g. Fastify 5's `logger`→`loggerInstance` rename, fast-redact's
+  non-recursive wildcards, `pgm.sql`'s identifier-vs-literal escaping —
+  all real bugs caught this way, not hypothetical).
+- **Multi-platform readiness** — Android, iOS, iPadOS, and Windows are all
+  in scope (macOS deferred). Decisions in the backend (auth, data
+  handling, HTTPS) need to hold up under each platform's own store
+  requirements, not just "work in a browser."
+
 ## Launch Countries (13, database-driven so more can be added later)
 
 Jamaica, Trinidad & Tobago, Dominica, Saint Lucia, Grenada,
@@ -68,4 +92,4 @@ Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
 | 01   | Foundation & Backend Bootstrap (Node.js + TypeScript + PostgreSQL, health check, error/rollback-safe DB access, migrations, tests) | Built and confirmed |
 | 02   | Core Domain Schema — Countries (13 launch countries, seeded, database-driven) & Users (bcrypt-hashed passwords, unique email), `GET /countries`, `POST /users`. Hardening pass: generic 500 messages (no internal/DB detail leaked to clients), bcrypt 72-byte limit enforced instead of silently truncated, countryId type + foreign-key validation, process-level crash handlers. Security-review pass: added `@fastify/helmet` (security headers) and `@fastify/rate-limit` (100/min global, 5/min on registration), defaulted Postgres TLS certificate validation to on, fixed a seed-migration bug found during review (schema and seed data must be separate migrations; `pgm.db.query` gives real parameter binding, `pgm.sql`'s `{}` syntax escapes for identifiers, not string values). | Hardened and security-reviewed, confirmed |
 | 03   | Authentication — `POST /auth/login` (JWT, 7d expiry) and `GET /me` (protected via `app.authenticate`). No email enumeration: identical error message and constant-time bcrypt comparison (against a dummy hash) whether the email is unknown or the password is wrong. `JWT_SECRET` required at startup, validated ≥32 chars. Login rate-limited to 5/min. | Built and security-reviewed, confirmed |
-| 04   | Observability foundation — one shared `pino` logger used everywhere (Fastify's per-request logs, DB pool, startup, crash handlers), request-id correlation (`x-request-id`, generated or passed through, echoed in the response and every log line for that request), and secret redaction (auth headers, password/token fields). Found and fixed a real bug during review: the initial redact paths (`*.password` etc.) only matched fields nested exactly one level deep and silently let a top-level `password`/`token` field straight through — added a regression test (`tests/logger.test.ts`) against a real pino instance that would have caught it, and confirmed it does by reintroducing the bug and watching the test fail. Also hit and fixed a Fastify 5 API change along the way: a pre-built logger instance goes through `loggerInstance`, not `logger` (which now only accepts config objects). | Built, security-reviewed, and confirmed — awaiting confirmation to continue |
+| 04   | Observability foundation — one shared `pino` logger used everywhere (Fastify's per-request logs, DB pool, startup, crash handlers), request-id correlation (`x-request-id`, generated or passed through, echoed in the response and every log line for that request), and secret redaction (auth headers, password/token fields). Found and fixed a real bug during review: the initial redact paths (`*.password` etc.) only matched fields nested exactly one level deep and silently let a top-level `password`/`token` field straight through — added a regression test (`tests/logger.test.ts`) against a real pino instance that would have caught it, and confirmed it does by reintroducing the bug and watching the test fail. Also hit and fixed a Fastify 5 API change along the way: a pre-built logger instance goes through `loggerInstance`, not `logger` (which now only accepts config objects). **Addendum** (production HTTPS/proxy readiness): added `TRUST_PROXY` config — without it, `request.ip` (what rate-limiting keys on) resolves to the TLS-terminating proxy's address for every client once actually deployed, not the real caller, silently merging every user into one rate-limit bucket. Added `tests/trustProxy.test.ts` for the hop-counting logic and manually verified live: spoofed `X-Forwarded-For` cannot bypass the login rate limit by default, and correctly does get independent buckets once `TRUST_PROXY=1` is set. Also documented the standing HTTPS/multi-platform/database requirements as Cross-Cutting Non-Negotiables above so they don't need restating every step. | Built, security-reviewed, and confirmed — awaiting confirmation to continue |
