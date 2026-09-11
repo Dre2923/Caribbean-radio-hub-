@@ -125,17 +125,22 @@ Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
 
 - Fortune-500 / top-tier commercial standard.
 - **Built to the caliber of a top-tier, Ivy-League/master-level graphics
-  programmer, and to the same engineering bar as a top Google app
-  creator** — this is a standard on the *people/craft* level, not just a
-  visual style guide: production-grade native performance (smooth 60fps+
-  animation, no jank, no layout thrash), platform-idiomatic quality on
+  programmer, video programmer, and photo/imaging programmer, and to the
+  same engineering bar as a top Google app creator** — this is a standard
+  on the *people/craft* level, not just a visual style guide:
+  production-grade native performance (smooth 60fps+ animation, no jank,
+  no layout thrash), correct and efficient handling of any video/image
+  media the app deals with (station logos/artwork, event flyers/photos,
+  advertising creative, any future video content — proper codecs/formats,
+  responsive image sizing, no unnecessarily bloated assets, no memory
+  leaks from mishandled media buffers), platform-idiomatic quality on
   each target (Android/iOS/iPadOS/Windows), and the same rigor already
   established for the backend (real due diligence, adversarial testing,
-  no shortcuts) applied to client code and graphics work too, not a lower
-  bar just because it's visual. Holds for every step in this section's
-  range and any other step that touches UI, animation, or client-side
-  graphics — not a one-time note that stops applying once Step 40 itself
-  is done.
+  no shortcuts) applied to client code, graphics, and media work too, not
+  a lower bar just because it's visual. Holds for every step in this
+  section's range and any other step that touches UI, animation, or
+  client-side graphics/video/photo handling — not a one-time note that
+  stops applying once Step 40 itself is done.
 - Strong, animated interactive buttons and dropdown menus with real
   hover/pressed/loading/focus/disabled/error states.
 - Caribbean color palette: warm sunset tones, ocean blues/teals, vibrant
