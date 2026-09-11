@@ -1,0 +1,73 @@
+name: Backend CI
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+# Least-privilege default: this workflow only reads the repo and calls out
+# to a local Postgres service, so it never needs write access to anything.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: caribbean
+          POSTGRES_PASSWORD: caribbean
+          POSTGRES_DB: caribbean_radio_hub_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caribbean"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://caribbean:caribbean@localhost:5432/caribbean_radio_hub_ci
+      # CI-only: not a real secret, never used outside this ephemeral job.
+      JWT_SECRET: ci-only-secret-not-for-production-use-0123456789abcdef
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (TypeScript)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run database migrations
+        run: npm run migrate:up
+
+      - name: Test
+        run: npm test
+
+      - name: Audit dependencies (fail on high/critical)
+        run: npm audit --audit-level=high

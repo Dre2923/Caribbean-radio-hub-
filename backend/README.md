@@ -139,3 +139,12 @@ npm test
 
 Tests use Fastify's `inject()` so the HTTP-layer tests do not require a
 running server or database.
+
+## CI
+
+`.github/workflows/backend-ci.yml` runs on every push/PR touching
+`backend/**`: install, build, lint, migrate a real Postgres service
+container, run the full test suite, and `npm audit --audit-level=high`
+(fails the build on a high/critical vulnerability) — the same sequence
+manually verified by hand at every step so far, now enforced automatically
+on every future change rather than relying on remembering to run it.
