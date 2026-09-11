@@ -14,4 +14,9 @@ export const env = {
   host: process.env.HOST ?? "0.0.0.0",
   databaseUrl: required("DATABASE_URL"),
   pgSsl: (process.env.PGSSL ?? "false").toLowerCase() === "true",
+  // Certificate validation stays on by default even when SSL is enabled -
+  // only an explicit PGSSL_REJECT_UNAUTHORIZED=false (e.g. a managed
+  // Postgres provider with a self-signed chain) turns it off, so nobody
+  // silently ends up accepting any certificate (a MITM risk).
+  pgSslRejectUnauthorized: (process.env.PGSSL_REJECT_UNAUTHORIZED ?? "true").toLowerCase() !== "false",
 };

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hashPassword } from "../utils/password.js";
 import {
   createUser,
@@ -26,51 +26,70 @@ function badRequest(reply: FastifyReply, message: string) {
   return reply.status(400).send({ status: "error", message });
 }
 
+async function registerUser(
+  request: FastifyRequest<{ Body: RegisterUserBody }>,
+  reply: FastifyReply,
+) {
+  const body = request.body ?? {};
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+  const { countryId } = body;
+
+  if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
+    return badRequest(reply, "A valid email is required");
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return badRequest(reply, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+  }
+  if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_LENGTH) {
+    return badRequest(reply, `Password must be at most ${MAX_PASSWORD_LENGTH} bytes`);
+  }
+  if (!displayName) {
+    return badRequest(reply, "displayName is required");
+  }
+  if (displayName.length > MAX_DISPLAY_NAME_LENGTH) {
+    return badRequest(reply, `displayName must be at most ${MAX_DISPLAY_NAME_LENGTH} characters`);
+  }
+  if (countryId !== undefined && (!Number.isInteger(countryId) || countryId <= 0)) {
+    return badRequest(reply, "countryId must be a positive integer");
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  try {
+    const user = await createUser({
+      email,
+      passwordHash,
+      displayName,
+      countryId: countryId ?? null,
+    });
+    return reply.status(201).send({ user });
+  } catch (err) {
+    if (err instanceof EmailAlreadyRegisteredError) {
+      return reply.status(409).send({ status: "error", message: "Email already registered" });
+    }
+    if (err instanceof InvalidCountryError) {
+      return badRequest(reply, "countryId does not match a known country");
+    }
+    throw err;
+  }
+}
+
 export async function usersRoutes(app: FastifyInstance): Promise<void> {
-  app.post<{ Body: RegisterUserBody }>("/users", async (request, reply) => {
-    const body = request.body ?? {};
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    const password = typeof body.password === "string" ? body.password : "";
-    const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
-    const { countryId } = body;
-
-    if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
-      return badRequest(reply, "A valid email is required");
-    }
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      return badRequest(reply, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
-    }
-    if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_LENGTH) {
-      return badRequest(reply, `Password must be at most ${MAX_PASSWORD_LENGTH} bytes`);
-    }
-    if (!displayName) {
-      return badRequest(reply, "displayName is required");
-    }
-    if (displayName.length > MAX_DISPLAY_NAME_LENGTH) {
-      return badRequest(reply, `displayName must be at most ${MAX_DISPLAY_NAME_LENGTH} characters`);
-    }
-    if (countryId !== undefined && (!Number.isInteger(countryId) || countryId <= 0)) {
-      return badRequest(reply, "countryId must be a positive integer");
-    }
-
-    const passwordHash = await hashPassword(password);
-
-    try {
-      const user = await createUser({
-        email,
-        passwordHash,
-        displayName,
-        countryId: countryId ?? null,
-      });
-      return reply.status(201).send({ user });
-    } catch (err) {
-      if (err instanceof EmailAlreadyRegisteredError) {
-        return reply.status(409).send({ status: "error", message: "Email already registered" });
-      }
-      if (err instanceof InvalidCountryError) {
-        return badRequest(reply, "countryId does not match a known country");
-      }
-      throw err;
-    }
-  });
+  app.post<{ Body: RegisterUserBody }>(
+    "/users",
+    {
+      // Registration hashes a password and writes to the DB on every call,
+      // so it gets a tighter limit than the general API ceiling in app.ts
+      // to blunt signup spam / credential-stuffing style abuse.
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: "1 minute",
+        },
+      },
+    },
+    registerUser,
+  );
 }

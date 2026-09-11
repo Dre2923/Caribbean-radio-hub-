@@ -35,6 +35,24 @@ npm run dev                   # starts the API on :3000
   - `409` — email already registered.
   - `400` — countryId doesn't match a known country.
 
+## Security baseline
+
+- **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,
+  X-Content-Type-Options, X-Frame-Options, etc.).
+- **Rate limiting**: `@fastify/rate-limit` caps the API at 100 req/min per
+  client by default; `POST /users` has its own tighter limit (5/min) since
+  it hashes a password and writes to the DB on every call.
+- **TLS certificate validation**: when `PGSSL=true`, the Postgres connection
+  validates the server certificate by default. Only set
+  `PGSSL_REJECT_UNAUTHORIZED=false` for a provider with a self-signed chain
+  you specifically trust — never as a default, since it accepts any
+  certificate (a MITM risk). A startup warning is logged if it's off.
+- **No raw error detail to clients**: see "Error handling" below.
+- **Seed data uses real parameter binding**: migrations insert data via
+  `pgm.db.query(sql, [...values])` ($1/$2 placeholders), not string
+  interpolation, even for static/trusted seed lists — one consistent, safe
+  path for every migration that touches data.
+
 ## Error handling
 
 Unexpected failures (e.g. a database outage) are logged in full server-side

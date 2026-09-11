@@ -1,4 +1,6 @@
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
 import { healthRoutes } from "./routes/health.js";
 import { countriesRoutes } from "./routes/countries.js";
 import { usersRoutes } from "./routes/users.js";
@@ -6,6 +8,12 @@ import { logger } from "./utils/logger.js";
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  app.register(helmet);
+  app.register(rateLimit, {
+    max: 100,
+    timeWindow: "1 minute",
+  });
 
   app.register(healthRoutes);
   app.register(countriesRoutes);
