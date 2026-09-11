@@ -6,10 +6,11 @@ error handling and transactional rollback protection built in.
 
 ## Stack
 
-- Node.js 20+, TypeScript
+- Node.js 20+, TypeScript 5.9.x (deliberately not the 7.0 rewrite yet —
+  too new for a production dependency)
 - Fastify (HTTP server)
 - PostgreSQL via `pg`, migrations via `node-pg-migrate`
-- Vitest for tests
+- Vitest for tests, ESLint 10 (flat config, `eslint.config.js`)
 
 ## Local setup
 
