@@ -158,6 +158,25 @@ Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
   section's range and any other step that touches UI, animation, or
   client-side graphics/video/photo handling — not a one-time note that
   stops applying once Step 40 itself is done.
+- **Function-first design, grounded in solid fundamentals, with a modern
+  look** — the same "intellectual"/high-caliber engineering bar applies
+  across every layer (graphics, backend, front-end) as one unified
+  standard, not separate bars per layer. Modern aesthetics never come at
+  the expense of usability or clarity — a screen should work correctly
+  and clearly first, look current second; never trend-chasing or
+  gimmicky at the cost of function.
+- **Every dashboard is genuinely, thoroughly functional** — the Admin
+  Dashboard (Steps 31–33) and any other data-view/control screen this
+  platform gets must give real, working control over the data it shows
+  (not a mockup-quality shell around static data), held to the same
+  due-diligence-verified-against-a-live-system standard as every backend
+  step so far.
+- **Low latency everywhere, not just voice** — every interaction, screen
+  transition, and API round-trip this platform makes should feel
+  immediate. Voice command's "fast/responsive, minimal lag" bar (below)
+  is one instance of this general standard, not a special case; it
+  applies to the whole client experience and to backend response times
+  it depends on.
 - Strong, animated interactive buttons and dropdown menus with real
   hover/pressed/loading/focus/disabled/error states.
 - Caribbean color palette: warm sunset tones, ocean blues/teals, vibrant
