@@ -24,7 +24,15 @@ export class EmailAlreadyRegisteredError extends Error {
   }
 }
 
+export class InvalidCountryError extends Error {
+  constructor(countryId: number) {
+    super(`No country with id ${countryId}`);
+    this.name = "InvalidCountryError";
+  }
+}
+
 const UNIQUE_VIOLATION = "23505";
+const FOREIGN_KEY_VIOLATION = "23503";
 
 export interface NewUser {
   email: string;
@@ -55,8 +63,11 @@ export async function createUser(input: NewUser): Promise<User> {
       return toUser(result.rows[0]);
     });
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    if (hasPgErrorCode(err, UNIQUE_VIOLATION)) {
       throw new EmailAlreadyRegisteredError(input.email);
+    }
+    if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION) && input.countryId != null) {
+      throw new InvalidCountryError(input.countryId);
     }
     throw err;
   }
@@ -76,6 +87,6 @@ export async function findUserByEmail(
   return { ...toUser(row), passwordHash: row.password_hash };
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && "code" in err && err.code === UNIQUE_VIOLATION;
+function hasPgErrorCode(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }

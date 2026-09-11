@@ -28,7 +28,22 @@ npm run dev                   # starts the API on :3000
 - `GET /countries` — lists the active launch countries (database-driven).
 - `POST /users` — registers a user account. Body: `{ email, password, displayName, countryId? }`.
   Passwords are hashed with bcrypt before storage and are never returned in
-  responses. Returns `400` on invalid input, `409` on a duplicate email.
+  responses.
+  - `400` — invalid email, password outside 8–72 bytes (bcrypt's hashing
+    limit — longer inputs are rejected rather than silently truncated),
+    displayName missing/too long, or countryId not a positive integer.
+  - `409` — email already registered.
+  - `400` — countryId doesn't match a known country.
+
+## Error handling
+
+Unexpected failures (e.g. a database outage) are logged in full server-side
+(`src/app.ts` error handler) but only ever return a generic
+`{"status":"error","message":"Internal server error"}` with a `500` to the
+client — internal error text and stack traces never reach the response.
+Expected 4xx errors (validation, bad JSON) still return their specific
+message. `src/index.ts` also installs `unhandledRejection`/`uncaughtException`
+handlers so an unexpected error can't silently crash or hang the process.
 
 ## Database access patterns
 
