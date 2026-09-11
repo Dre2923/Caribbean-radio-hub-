@@ -401,7 +401,53 @@ a deleted station's junction rows confirmed gone via a direct query).
 - **JWT_SECRET is required and validated**: the server refuses to start with
   a secret shorter than 32 characters. Generate one with
   `openssl rand -base64 48`.
+- **JWT algorithm is explicitly pinned to HS256** (`app.ts`, both `sign` and
+  `verify`), not left to the library's default of accepting any of
+  HS256/HS384/HS512 for a plain secret key. A forged token can't pick its
+  own verification algorithm via its header — standard JWT hardening
+  (OWASP's JWT cheat sheet), verified in `tests/authenticate.test.ts`.
+- **Every `fast-jwt` verification failure is a 401**, not just the 4 out of
+  ~15 failure codes `@fastify/jwt` itself wraps into a proper-401 error —
+  see "Adversarial security pass" below for how this was found.
 - **No email enumeration via login**: see `POST /v1/auth/login` above.
+
+### Adversarial security pass
+
+Beyond the per-step due diligence above, this backend has been directly
+attacked by its own builder — not just reviewed — against a live running
+server: JWT forgery (`alg: none`, invalid/nonsense `alg` headers, weak-secret
+signature guessing, oversized tokens), auth/authz bypass attempts (missing
+tokens, cross-role privilege escalation, mass-assignment of `role` via
+`PATCH /v1/me`), SQL injection through every class of input (email, station
+name, query params, path params), rate-limit brute-forcing, CORS/header
+inspection, and error-response leakage (stack traces, sensitive fields,
+`passwordHash`) on 404s and malformed bodies.
+
+One real, non-hypothetical finding came out of it: a forged token with an
+invalid `alg` header returned `500` instead of `401`. Root cause:
+`@fastify/jwt` only converts 4 of `fast-jwt`'s ~15 verification-failure
+codes into a proper-401 `FastifyError`; everything else (including an
+invalid algorithm — the classic `alg: none` forgery vector) passed through
+as a raw error with no `statusCode`, falling through this app's generic
+error handler to its `500` default. The token was still correctly
+*rejected* either way — this was never an auth bypass — but a hostile,
+malformed request was being misclassified as the server's own bug (logged
+at `error`, not `warn`). Fixed in `app.ts`'s `setErrorHandler` by
+recognizing any `FAST_JWT_*` error code as a `401` regardless of whether
+the library remembered to attach a `statusCode`; locked in with a
+regression test in `tests/authenticate.test.ts`, proven to fail against the
+pre-fix code (reverted the fix, watched both new tests fail with the exact
+`500`, restored it) the same way every other regression fix in this build
+has been proven, not just asserted.
+
+Everything else held: no SQL injection anywhere (parameterized queries
+throughout — a payload like `'); DROP TABLE radio_stations;--` in a station
+name round-trips as inert stored data, verified against the real table
+afterward), no privilege escalation (role changes require an admin account
+and can't be set by any request body), no sensitive data ever appears in a
+response, no stack traces or internal detail leak on any error path, and
+rate limiting is enforced under an actual brute-force burst, not just
+configured.
 
 ## Production deployment: HTTPS and TRUST_PROXY
 

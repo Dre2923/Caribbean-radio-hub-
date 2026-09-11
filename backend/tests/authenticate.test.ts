@@ -34,7 +34,80 @@ function tamperSignature(token: string): string {
   return parts.join(".");
 }
 
+// Builds a syntactically well-formed but unsigned/garbage-signed JWT with
+// an arbitrary header, for exercising verification-failure paths that
+// don't require actually knowing JWT_SECRET.
+function forgeToken(header: Record<string, unknown>, payload: Record<string, unknown>): string {
+  const encode = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+  return `${encode(header)}.${encode(payload)}.forged-signature`;
+}
+
 describe("app.authenticate", () => {
+  // Regression test for a real bug found via live adversarial testing of a
+  // running server, not a hypothetical: @fastify/jwt only converts 4 of
+  // fast-jwt's ~15 verification-failure codes (expired, invalid
+  // signature/key/claim, missing signature) into its own proper-401
+  // FastifyError - everything else, including an invalid `alg` header (the
+  // classic "alg: none" JWT forgery technique), passes through as a raw
+  // error with no `statusCode` at all. The app's generic error handler
+  // (src/app.ts) defaulted that to 500 - a hostile/malformed token got
+  // treated as the server's own bug (logged at "error", not "warn") rather
+  // than correctly rejected as unauthorized. Fixed by recognizing any
+  // FAST_JWT_* error code as a 401 regardless of whether the library
+  // itself attached a statusCode.
+  it("rejects a forged token with an invalid alg header as 401, not 500", async () => {
+    const app = buildApp();
+    await app.ready();
+
+    const forged = forgeToken({ alg: "none", typ: "JWT" }, { sub: 1, email: "nobody@example.com" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${forged}` },
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("rejects a forged token with a nonsense alg header as 401, not 500", async () => {
+    const app = buildApp();
+    await app.ready();
+
+    const forged = forgeToken(
+      { alg: "definitely-not-a-real-algorithm", typ: "JWT" },
+      { sub: 1, email: "nobody@example.com" },
+    );
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${forged}` },
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("rejects a token that claims a supported-elsewhere HMAC variant we don't accept", async () => {
+    // HS384/HS512 are algorithms fast-jwt would accept by default for a
+    // plain secret key if this app hadn't explicitly pinned verification
+    // to HS256 (see app.ts) - forging a valid signature in either variant
+    // still requires JWT_SECRET either way, so this isn't a bypass either
+    // way, but the header claim alone should never even get that far.
+    const app = buildApp();
+    await app.ready();
+
+    const forged = forgeToken({ alg: "HS384", typ: "JWT" }, { sub: 1, email: "nobody@example.com" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${forged}` },
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("rejects a token whose signature was tampered mid-string", async () => {
     const app = buildApp();
     await app.ready();

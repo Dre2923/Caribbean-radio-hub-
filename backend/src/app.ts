@@ -82,7 +82,18 @@ export function buildApp() {
   });
   app.register(jwt, {
     secret: env.jwtSecret,
-    sign: { expiresIn: env.jwtExpiresIn },
+    sign: { expiresIn: env.jwtExpiresIn, algorithm: "HS256" },
+    // Explicitly pinned rather than left to fast-jwt's default (which
+    // accepts any of HS256/HS384/HS512 for a plain secret key with no
+    // algorithms option given at all). Signing with only our own secret
+    // means an attacker still can't forge a token in any HMAC variant
+    // without that secret either way, so this isn't closing an active
+    // hole - but never letting a token's own header dictate which
+    // algorithm family gets used to verify it is standard JWT hardening
+    // (OWASP's JWT cheat sheet), and it costs nothing to make explicit
+    // rather than implicit. Found this gap via live adversarial testing
+    // of the auth layer, not a hypothetical.
+    verify: { algorithms: ["HS256"] },
   });
 
   if (env.enableApiDocs) {
@@ -195,7 +206,21 @@ export function buildApp() {
   );
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
-    const statusCode = error.statusCode ?? 500;
+    // @fastify/jwt only wraps 4 of fast-jwt's ~15 verification failure
+    // codes (expired, invalid signature/key/claim, missing signature)
+    // into its own proper-401 FastifyError; everything else - an invalid
+    // alg (the classic "alg: none" forgery attempt), a malformed token, an
+    // invalid claim type/payload - passes through unwrapped with no
+    // statusCode at all, which fell through to the generic 500 branch
+    // below and got logged/treated as our own bug instead of a hostile or
+    // malformed client token. Found via live adversarial testing (forging
+    // alg:none and alg:None tokens against a real running server), not a
+    // hypothetical: every FAST_JWT_* code is a client-input verification
+    // failure, never a legitimate server-side error, so all of them are
+    // 401 regardless of whether the library itself remembered to say so.
+    const isJwtVerificationError =
+      typeof error.code === "string" && error.code.startsWith("FAST_JWT_");
+    const statusCode = isJwtVerificationError ? 401 : (error.statusCode ?? 500);
     // request.log carries the same reqId as the request/response log lines
     // Fastify already emits, so this error can be found alongside them.
     // A 4xx is an expected client mistake (bad input, missing token) - it
