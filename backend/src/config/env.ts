@@ -34,4 +34,11 @@ export const env = {
   pgSslRejectUnauthorized: (process.env.PGSSL_REJECT_UNAUTHORIZED ?? "true").toLowerCase() !== "false",
   jwtSecret: requiredJwtSecret(),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? "7d",
+  // Vitest sets VITEST=true regardless of NODE_ENV, so this stays quiet in
+  // the test run's output without depending on how NODE_ENV happens to be
+  // set. Override with LOG_LEVEL for a specific test that wants to inspect
+  // log output.
+  logLevel:
+    process.env.LOG_LEVEL ??
+    (process.env.VITEST ? "silent" : process.env.NODE_ENV === "production" ? "info" : "debug"),
 };

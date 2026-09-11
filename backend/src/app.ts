@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError } from "fastify";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import jwt from "@fastify/jwt";
@@ -7,11 +7,25 @@ import { countriesRoutes } from "./routes/countries.js";
 import { usersRoutes } from "./routes/users.js";
 import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
-import { logger } from "./utils/logger.js";
+import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 
-export function buildApp(): FastifyInstance {
-  const app = Fastify({ logger: false });
+export function buildApp() {
+  const app = Fastify({
+    loggerInstance: pinoLogger,
+    // Trust an incoming x-request-id (e.g. from a load balancer) so a
+    // request can be traced across services; requestIdHeader already
+    // covers that case, so genReqId only needs to cover "no header sent".
+    requestIdHeader: "x-request-id",
+    genReqId: () => crypto.randomUUID(),
+  });
+
+  // Echo the request id back so a client (or whoever's debugging with them)
+  // can hand it over and it's immediately findable in the logs.
+  app.addHook("onSend", async (request, reply, payload) => {
+    reply.header("x-request-id", request.id);
+    return payload;
+  });
 
   app.register(helmet);
   app.register(rateLimit, {
@@ -39,12 +53,9 @@ export function buildApp(): FastifyInstance {
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const statusCode = error.statusCode ?? 500;
-    logger.error("Unhandled request error", {
-      error: error.message,
-      stack: error.stack,
-      method: request.method,
-      url: request.url,
-    });
+    // request.log carries the same reqId as the request/response log lines
+    // Fastify already emits, so this error can be found alongside them.
+    request.log.error({ err: error }, "Unhandled request error");
 
     // Below 500 the message comes from Fastify itself or our own route code
     // (bad JSON body, unsupported media type, etc.) and is safe to show.

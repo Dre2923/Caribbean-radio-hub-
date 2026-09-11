@@ -66,6 +66,27 @@ npm run dev                   # starts the API on :3000
   `openssl rand -base64 48`.
 - **No email enumeration via login**: see `POST /auth/login` above.
 
+## Observability
+
+- **Structured logging**: a single shared `pino` instance (`src/utils/logger.ts`)
+  is used everywhere - Fastify's own per-request logs, the DB pool, startup,
+  and process-level crash handlers - so every log line shares the same
+  level/format/redaction config. Pretty-printed and colorized outside
+  production; plain JSON in production for log aggregation.
+- **Request correlation**: every request gets an id (`x-request-id`, taken
+  from an incoming header if present, otherwise a generated UUID), echoed
+  back in the response header and included in every log line for that
+  request - including the error-handler's log line, so a failure can be
+  traced back to its exact request/response pair.
+- **Redaction**: `Authorization`/`Cookie` headers and any `password`,
+  `passwordHash`, or `token` field (top-level or nested one level) are
+  redacted before they reach a log line, at the top-level AND nested one
+  level deep - fast-redact's wildcard paths aren't recursive, so both forms
+  are listed explicitly. Covered by `tests/logger.test.ts` against a real
+  pino instance, not just the config in isolation.
+- `LOG_LEVEL` overrides the default (`debug` outside production, `info` in
+  production, `silent` under the test runner).
+
 ## Error handling
 
 Unexpected failures (e.g. a database outage) are logged in full server-side

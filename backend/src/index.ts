@@ -4,11 +4,10 @@ import { logger } from "./utils/logger.js";
 
 const app = buildApp();
 
+// Fastify's own logger already announces the listening address(es) once
+// the server is up, so there's no need to log that again here.
 app
   .listen({ port: env.port, host: env.host })
-  .then(() => {
-    logger.info(`Server listening on http://${env.host}:${env.port}`);
-  })
   .catch((err) => {
     logger.error("Failed to start server", { error: err instanceof Error ? err.message : String(err) });
     process.exit(1);
