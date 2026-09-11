@@ -38,3 +38,22 @@ export const countrySchema = {
   },
   required: ["id", "code", "name", "isActive"],
 } as const;
+
+export const genreSchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    name: { type: "string" },
+  },
+  required: ["id", "name"],
+} as const;
+
+export const languageSchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    code: { type: "string" },
+    name: { type: "string" },
+  },
+  required: ["id", "code", "name"],
+} as const;

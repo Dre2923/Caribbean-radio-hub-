@@ -108,17 +108,25 @@ is still calling it.
   or a curated-off (inactive) one — the same response either way, see
   "Radio Master Catalog" below.
 - `POST /v1/stations` — requires an admin account (see "Authorization: user
-  roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, description? }`.
-  `streamUrl`/`websiteUrl` must be HTTPS. `400` on invalid input or an
-  unknown `countryId`, `409` if `streamUrl` is already registered to
-  another station.
+  roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, description?, genreIds?, languageIds? }`.
+  `streamUrl`/`websiteUrl` must be HTTPS. `400` on invalid input, an
+  unknown `countryId`, or a `genreIds`/`languageIds` entry that doesn't
+  match a real genre/language; `409` if `streamUrl` is already registered
+  to another station.
 - `PATCH /v1/stations/:id` — requires an admin account. All fields
   optional, including `isActive` (pulls/restores a station from the public
-  catalog without deleting it). Same `400`/`409` cases as create, `404` for
-  an unknown id.
+  catalog without deleting it). `genreIds`/`languageIds`, if present,
+  *replace* the station's full tag set — omit to leave it untouched, send
+  `[]` to clear it. Same `400`/`409` cases as create, `404` for an unknown
+  id.
 - `DELETE /v1/stations/:id` — requires an admin account. Permanently
-  deletes the station and its history — prefer `PATCH { isActive: false }`
-  for routine curation. `404` for an unknown id.
+  deletes the station (and its genre/language associations, which cascade)
+  and its history — prefer `PATCH { isActive: false }` for routine
+  curation. `404` for an unknown id.
+- `GET /v1/genres` — lists the genres a station can be tagged with. Public,
+  no auth.
+- `GET /v1/languages` — lists the languages a station can be tagged with.
+  Public, no auth.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -327,6 +335,51 @@ missing/non-admin token on every write; `409` for a duplicate `streamUrl`;
 `400` for an unknown `countryId`; `404` for an unknown station id on read,
 update, and delete; and a client-supplied unknown field silently stripped
 rather than rejected or persisted.
+
+### Genres and languages (Step 13)
+
+`genres` and `languages` (migration `1700000008000_genres_and_languages`,
+seeded by `1700000008500_seed_genres_and_languages`) are database-driven
+lookup tables — the same "seed a starter set, add more later without a
+code change" shape as `countries` — rather than a hardcoded enum, listed
+publicly at `GET /v1/genres` and `GET /v1/languages`. A station can carry
+more than one of each (`station_genres`/`station_languages`, many-to-many
+junction tables): several of the 13 launch countries are functionally
+bilingual on-air (Saint Lucia and Dominica's French Creole alongside
+English, Puerto Rico's Spanish and English), and a station is rarely
+"only" one genre.
+
+- **A single round trip, not N+1.** Fetching a station's tags uses two
+  independent correlated subqueries with `json_agg` (one for genres, one
+  for languages) rather than joining both junction tables directly into
+  the main query — joining two separate one-to-many relations at once
+  would fan a station with, say, 2 genres and 3 languages out into 6
+  duplicated rows before any aggregation could run. `COALESCE(..., '[]')`
+  means "no tags" is an empty array, never a `null` a client has to guard
+  against.
+- **`genreIds`/`languageIds` replace the full set, not merge into it.**
+  `PATCH { genreIds: [3] }` on a station currently tagged `[1, 2]` leaves
+  it tagged only `[3]` — simpler and unambiguous compared to diffing an
+  add/remove list, and matches the write volume an admin-curated catalog
+  actually sees. Omit the field to leave existing tags untouched; send
+  `[]` to clear them.
+- **An unknown id is a `400`, not a silent no-op or a `500`.** Both are
+  enforced by the junction tables' own foreign keys — the same "database
+  constraint, not just application code" posture as `streamUrl`'s
+  uniqueness above — and the write path distinguishes *which* one failed
+  (genre vs. language vs. country) from the failing constraint's name to
+  return the right message rather than a generic one.
+- **Deleting a station cascades.** `ON DELETE CASCADE` on both junction
+  tables means a deleted station's tag associations are gone with it —
+  never an orphaned row a future genre/language listing could trip over.
+
+Verified end-to-end against a real database in
+`tests/genresAndLanguages.test.ts` (public listing, seeded content) and
+`tests/stations.test.ts` (create/read with hydrated genre and language
+objects, not just echoed ids; full-set replacement, untouched-when-omitted,
+and cleared-with-`[]` on update; `400` for an unknown genre or language id;
+a duplicate id within the same request tolerated rather than erroring; and
+a deleted station's junction rows confirmed gone via a direct query).
 
 ## Security baseline
 

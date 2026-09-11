@@ -42,11 +42,30 @@ function uniqueStreamUrl(label: string): string {
   return `https://stream.example.com/${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-describe("radio stations", () => {
-  afterAll(async () => {
-    await pool.end();
-  });
+// One file-level afterAll, not one per describe: an afterAll nested inside
+// an earlier describe block runs - and closes the pool - before a later
+// sibling describe block's tests in the same file even start. Hit and
+// fixed this same bug twice already in this build (tests/emailOutbox.test.ts,
+// tests/adminRole.test.ts) - putting it at file scope from the start here.
+afterAll(async () => {
+  await pool.end();
+});
 
+async function getRealGenreIds(app: ReturnType<typeof buildApp>, count: number): Promise<number[]> {
+  const response = await app.inject({ method: "GET", url: "/v1/genres" });
+  const genres = response.json().genres as Array<{ id: number }>;
+  if (genres.length < count) throw new Error(`expected at least ${count} seeded genres`);
+  return genres.slice(0, count).map((g) => g.id);
+}
+
+async function getRealLanguageIds(app: ReturnType<typeof buildApp>, count: number): Promise<number[]> {
+  const response = await app.inject({ method: "GET", url: "/v1/languages" });
+  const languages = response.json().languages as Array<{ id: number }>;
+  if (languages.length < count) throw new Error(`expected at least ${count} seeded languages`);
+  return languages.slice(0, count).map((l) => l.id);
+}
+
+describe("radio stations", () => {
   it("rejects station creation with no token, and with a non-admin token", async () => {
     const app = buildApp();
     const countryId = await getRealCountryId(app);
@@ -262,6 +281,210 @@ describe("radio stations", () => {
       headers: { authorization: `Bearer ${regularToken}` },
     });
     expect(remove.statusCode).toBe(403);
+
+    await app.close();
+  });
+});
+
+describe("radio station genres and languages", () => {
+  it("creates a station tagged with genres and languages, hydrated in the response", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-create");
+    const genreIds = await getRealGenreIds(app, 2);
+    const languageIds = await getRealLanguageIds(app, 2);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Tagged Station",
+        streamUrl: uniqueStreamUrl("tag-create"),
+        genreIds,
+        languageIds,
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    const station = create.json().station;
+    expect(station.genres.map((g: { id: number }) => g.id).sort()).toEqual([...genreIds].sort());
+    expect(station.languages.map((l: { id: number }) => l.id).sort()).toEqual(
+      [...languageIds].sort(),
+    );
+    // Hydrated, not just echoed ids - each entry carries its real name.
+    expect(station.genres[0]).toHaveProperty("name");
+    expect(station.languages[0]).toHaveProperty("code");
+
+    // The public read path returns the same tags.
+    const get = await app.inject({ method: "GET", url: `/v1/stations/${station.id}` });
+    expect(get.json().station.genres.map((g: { id: number }) => g.id).sort()).toEqual(
+      [...genreIds].sort(),
+    );
+
+    await app.close();
+  });
+
+  it("creates a station with no tags when genreIds/languageIds are omitted", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-omit");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Untagged Station", streamUrl: uniqueStreamUrl("tag-omit") },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station.genres).toEqual([]);
+    expect(create.json().station.languages).toEqual([]);
+
+    await app.close();
+  });
+
+  it("replaces the full tag set on update, leaves it untouched when omitted, and clears it with []", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-update");
+    const [genreA, genreB, genreC] = await getRealGenreIds(app, 3);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Retag Station",
+        streamUrl: uniqueStreamUrl("tag-update"),
+        genreIds: [genreA, genreB],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    // Replaces the set entirely - genreA is gone, genreC is new, genreB
+    // was never re-sent and is gone too (this isn't an additive merge).
+    const replace = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { genreIds: [genreC] },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(replace.statusCode).toBe(200);
+    expect(replace.json().station.genres.map((g: { id: number }) => g.id)).toEqual([genreC]);
+
+    // Omitting genreIds on an unrelated update leaves the current set alone.
+    const untouched = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { name: "Retag Station Renamed" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(untouched.json().station.genres.map((g: { id: number }) => g.id)).toEqual([genreC]);
+
+    // An explicit [] clears it.
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { genreIds: [] },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(cleared.json().station.genres).toEqual([]);
+
+    await app.close();
+  });
+
+  it("rejects an unknown genreId or languageId with 400", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-invalid");
+
+    const badGenre = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Bad Genre Station",
+        streamUrl: uniqueStreamUrl("bad-genre"),
+        genreIds: [999_999],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(badGenre.statusCode).toBe(400);
+
+    const badLanguage = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Bad Language Station",
+        streamUrl: uniqueStreamUrl("bad-language"),
+        languageIds: [999_999],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(badLanguage.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("tolerates a duplicate id within the same request instead of erroring", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-dupe");
+    const [genreId] = await getRealGenreIds(app, 1);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Dupe Tag Station",
+        streamUrl: uniqueStreamUrl("tag-dupe"),
+        genreIds: [genreId, genreId],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station.genres).toHaveLength(1);
+
+    await app.close();
+  });
+
+  it("cascades: deleting a station removes its genre/language associations", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "tag-cascade");
+    const genreIds = await getRealGenreIds(app, 1);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Cascade Station",
+        streamUrl: uniqueStreamUrl("tag-cascade"),
+        genreIds,
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const beforeDelete = await pool.query("SELECT 1 FROM station_genres WHERE station_id = $1", [
+      stationId,
+    ]);
+    expect(beforeDelete.rowCount).toBe(1);
+
+    await app.inject({
+      method: "DELETE",
+      url: `/v1/stations/${stationId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const afterDelete = await pool.query("SELECT 1 FROM station_genres WHERE station_id = $1", [
+      stationId,
+    ]);
+    expect(afterDelete.rowCount).toBe(0);
 
     await app.close();
   });

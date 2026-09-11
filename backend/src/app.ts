@@ -10,6 +10,8 @@ import { usersRoutes } from "./routes/users.js";
 import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { stationsRoutes } from "./routes/stations.js";
+import { genresRoutes } from "./routes/genres.js";
+import { languagesRoutes } from "./routes/languages.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
@@ -186,6 +188,8 @@ export function buildApp() {
       v1.register(authRoutes);
       v1.register(meRoutes);
       v1.register(stationsRoutes);
+      v1.register(genresRoutes);
+      v1.register(languagesRoutes);
     },
     { prefix: "/v1" },
   );

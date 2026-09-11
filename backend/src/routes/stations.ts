@@ -7,6 +7,8 @@ import {
   updateStation,
   DuplicateStreamUrlError,
   InvalidCountryError,
+  InvalidGenreError,
+  InvalidLanguageError,
 } from "../repositories/stationsRepository.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
@@ -60,13 +62,16 @@ interface CreateStationBody {
   streamUrl: string;
   websiteUrl?: string;
   description?: string;
+  genreIds?: number[];
+  languageIds?: number[];
 }
 
 async function createStationHandler(
   request: FastifyRequest<{ Body: CreateStationBody }>,
   reply: FastifyReply,
 ) {
-  const { countryId, name, streamUrl, websiteUrl, description } = request.body;
+  const { countryId, name, streamUrl, websiteUrl, description, genreIds, languageIds } =
+    request.body;
   try {
     const station = await createStation({
       countryId,
@@ -74,6 +79,8 @@ async function createStationHandler(
       streamUrl,
       websiteUrl: websiteUrl ?? null,
       description: description ?? null,
+      genreIds,
+      languageIds,
       createdByUserId: request.user.sub,
     });
     return reply.status(201).send({ station });
@@ -83,6 +90,9 @@ async function createStationHandler(
     }
     if (err instanceof InvalidCountryError) {
       return badRequest(reply, "countryId does not match a known country");
+    }
+    if (err instanceof InvalidGenreError || err instanceof InvalidLanguageError) {
+      return badRequest(reply, err.message);
     }
     throw err;
   }
@@ -95,6 +105,8 @@ interface UpdateStationBody {
   websiteUrl?: string;
   description?: string;
   isActive?: boolean;
+  genreIds?: number[];
+  languageIds?: number[];
 }
 
 async function updateStationHandler(
@@ -113,6 +125,9 @@ async function updateStationHandler(
     }
     if (err instanceof InvalidCountryError) {
       return badRequest(reply, "countryId does not match a known country");
+    }
+    if (err instanceof InvalidGenreError || err instanceof InvalidLanguageError) {
+      return badRequest(reply, err.message);
     }
     throw err;
   }
@@ -187,7 +202,10 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
       // shouldn't be reachable by any authenticated user, only an admin.
       preHandler: [app.authenticate, app.requireAdmin],
       schema: {
-        description: "Creates a radio station. Requires an admin account.",
+        description:
+          "Creates a radio station. Requires an admin account. Optional genreIds/" +
+          "languageIds attach it to existing genres (GET /v1/genres) and languages " +
+          "(GET /v1/languages).",
         tags: ["stations"],
         security: [{ bearerAuth: [] }],
         body: createStationBodySchema,
@@ -215,7 +233,9 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
         description:
           "Updates a radio station. Requires an admin account. All fields optional; only " +
           "the fields present are changed. Setting isActive: false pulls it from the " +
-          "public catalog without deleting its history.",
+          "public catalog without deleting its history. genreIds/languageIds, if " +
+          "present, replace the station's full set of each - omit them to leave " +
+          "existing associations untouched, or send [] to clear them.",
         tags: ["stations"],
         security: [{ bearerAuth: [] }],
         params: {

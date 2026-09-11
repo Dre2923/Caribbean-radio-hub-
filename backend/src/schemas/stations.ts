@@ -1,9 +1,21 @@
 // Radio Master Catalog (Step 12+) schema fragments, kept in their own
 // module rather than schemas/common.ts as the catalog domain grows.
 
+import { genreSchema, languageSchema } from "./common.js";
+
 export const MAX_STATION_NAME_LENGTH = 200; // matches radio_stations.name's column width
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
 export const MAX_DESCRIPTION_LENGTH = 2000;
+// Generous relative to the ~12 seeded genres and 4 seeded languages (both
+// tables are meant to keep growing via curation), while still bounding an
+// abusive request that tries to submit an enormous id array.
+const MAX_TAG_IDS = 50;
+
+const TAG_ID_LIST_SCHEMA = {
+  type: "array",
+  items: { type: "integer", minimum: 1 },
+  maxItems: MAX_TAG_IDS,
+} as const;
 
 // AJV's "uri" format checks general URI structure but not scheme; the
 // pattern is what actually enforces HTTPS-only, matching the API's own
@@ -27,6 +39,8 @@ export const stationSchema = {
     websiteUrl: { type: ["string", "null"] },
     description: { type: ["string", "null"] },
     isActive: { type: "boolean" },
+    genres: { type: "array", items: genreSchema },
+    languages: { type: "array", items: languageSchema },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
@@ -38,6 +52,8 @@ export const stationSchema = {
     "websiteUrl",
     "description",
     "isActive",
+    "genres",
+    "languages",
     "createdAt",
     "updatedAt",
   ],
@@ -53,6 +69,8 @@ export const createStationBodySchema = {
     streamUrl: HTTPS_URL_SCHEMA,
     websiteUrl: HTTPS_URL_SCHEMA,
     description: { type: "string", maxLength: MAX_DESCRIPTION_LENGTH },
+    genreIds: TAG_ID_LIST_SCHEMA,
+    languageIds: TAG_ID_LIST_SCHEMA,
   },
 } as const;
 
@@ -67,5 +85,7 @@ export const updateStationBodySchema = {
     websiteUrl: HTTPS_URL_SCHEMA,
     description: { type: "string", maxLength: MAX_DESCRIPTION_LENGTH },
     isActive: { type: "boolean" },
+    genreIds: TAG_ID_LIST_SCHEMA,
+    languageIds: TAG_ID_LIST_SCHEMA,
   },
 } as const;
