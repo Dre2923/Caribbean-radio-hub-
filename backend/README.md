@@ -14,10 +14,10 @@ error handling and transactional rollback protection built in.
 ## Local setup
 
 ```bash
-cp .env.example .env
+cp .env.example .env          # then set JWT_SECRET (openssl rand -base64 48)
 docker compose up -d          # starts local Postgres on :5432
 npm install
-npm run migrate:up            # applies migrations/1700000000000_init.cjs
+npm run migrate:up            # applies all pending migrations
 npm run dev                   # starts the API on :3000
 ```
 
@@ -34,6 +34,15 @@ npm run dev                   # starts the API on :3000
     displayName missing/too long, or countryId not a positive integer.
   - `409` — email already registered.
   - `400` — countryId doesn't match a known country.
+- `POST /auth/login` — body: `{ email, password }`. Returns `{ token, user }`
+  on success (a JWT, `JWT_EXPIRES_IN` default `7d`) or `401` with the exact
+  same message (`"Invalid email or password"`) whether the email doesn't
+  exist or the password is wrong — timing is kept constant too (a real
+  bcrypt comparison always runs, against a dummy hash when the email isn't
+  found), so a login attempt can't be used to enumerate registered emails.
+  Rate-limited to 5/min, the tightest limit in the API.
+- `GET /me` — requires `Authorization: Bearer <token>`. Returns the current
+  user's profile. `401` on a missing/invalid/expired/tampered token.
 
 ## Security baseline
 
@@ -52,6 +61,10 @@ npm run dev                   # starts the API on :3000
   `pgm.db.query(sql, [...values])` ($1/$2 placeholders), not string
   interpolation, even for static/trusted seed lists — one consistent, safe
   path for every migration that touches data.
+- **JWT_SECRET is required and validated**: the server refuses to start with
+  a secret shorter than 32 characters. Generate one with
+  `openssl rand -base64 48`.
+- **No email enumeration via login**: see `POST /auth/login` above.
 
 ## Error handling
 

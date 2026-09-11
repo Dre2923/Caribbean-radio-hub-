@@ -87,6 +87,15 @@ export async function findUserByEmail(
   return { ...toUser(row), passwordHash: row.password_hash };
 }
 
+export async function findUserById(id: number): Promise<User | null> {
+  const result = await query<UserRow>(
+    "SELECT id, email, display_name, country_id, created_at FROM users WHERE id = $1",
+    [id],
+  );
+  const row = result.rows[0];
+  return row ? toUser(row) : null;
+}
+
 function hasPgErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
