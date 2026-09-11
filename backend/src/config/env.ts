@@ -60,4 +60,8 @@ export const env = {
     process.env.LOG_LEVEL ??
     (process.env.VITEST ? "silent" : process.env.NODE_ENV === "production" ? "info" : "debug"),
   trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+  // Off by default in production - this API isn't a published public
+  // contract yet, so the full route/schema map isn't exposed unless
+  // explicitly opted into. Always on outside production for local/CI use.
+  enableApiDocs: process.env.NODE_ENV !== "production" || process.env.ENABLE_API_DOCS === "true",
 };

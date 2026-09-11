@@ -45,6 +45,25 @@ npm run dev                   # starts the API on :3000
 - `GET /me` — requires `Authorization: Bearer <token>`. Returns the current
   user's profile. `401` on a missing/invalid/expired/tampered token.
 
+Full interactive API docs (OpenAPI 3, generated from the route schemas
+below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
+is set — off by default in production since this isn't a published public
+API yet. Raw spec at `/docs/json`.
+
+## Request validation
+
+`POST /users` validates its body against a JSON Schema (email format,
+password length, displayName length, countryId type) rather than hand-rolled
+if/else checks — Fastify rejects malformed requests before the handler ever
+runs, and the same schema documents the endpoint in `/docs`. Two things stay
+outside the schema deliberately:
+- The bcrypt 72-byte password ceiling (JSON Schema's `maxLength` counts
+  UTF-16 code units, not UTF-8 bytes, so it can't express this correctly).
+- `POST /auth/login`'s body has no schema at all: a schema-validation
+  failure would return a different status/message than a wrong password,
+  undermining the anti-enumeration behavior above. Every invalid login
+  input returns the identical 401.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

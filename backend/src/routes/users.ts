@@ -5,20 +5,22 @@ import {
   EmailAlreadyRegisteredError,
   InvalidCountryError,
 } from "../repositories/usersRepository.js";
+import { errorResponseSchema, userSchema } from "../schemas/common.js";
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_EMAIL_LENGTH = 254; // RFC 5321
 const MIN_PASSWORD_LENGTH = 8;
 // bcrypt silently ignores any bytes beyond 72 - without a cap, two different
-// passwords sharing that prefix would hash identically. Reject before that
-// point rather than truncate.
+// passwords sharing that prefix would hash identically. JSON Schema's
+// minLength/maxLength count UTF-16 code units, not UTF-8 bytes, so this
+// can't be expressed declaratively - it's enforced in the handler below
+// instead of the route schema.
 const MAX_PASSWORD_LENGTH = 72;
 const MAX_DISPLAY_NAME_LENGTH = 120; // matches the users.display_name column
 
 interface RegisterUserBody {
-  email?: string;
-  password?: string;
-  displayName?: string;
+  email: string;
+  password: string;
+  displayName: string;
   countryId?: number;
 }
 
@@ -30,29 +32,14 @@ async function registerUser(
   request: FastifyRequest<{ Body: RegisterUserBody }>,
   reply: FastifyReply,
 ) {
-  const body = request.body ?? {};
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-  const password = typeof body.password === "string" ? body.password : "";
-  const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
-  const { countryId } = body;
+  // Schema validation (required fields, email format, string lengths,
+  // countryId being a positive integer) has already run by this point -
+  // preValidation below normalized email/displayName first. Only the
+  // checks that can't be expressed as JSON Schema remain here.
+  const { email, password, displayName, countryId } = request.body;
 
-  if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
-    return badRequest(reply, "A valid email is required");
-  }
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return badRequest(reply, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
-  }
   if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_LENGTH) {
     return badRequest(reply, `Password must be at most ${MAX_PASSWORD_LENGTH} bytes`);
-  }
-  if (!displayName) {
-    return badRequest(reply, "displayName is required");
-  }
-  if (displayName.length > MAX_DISPLAY_NAME_LENGTH) {
-    return badRequest(reply, `displayName must be at most ${MAX_DISPLAY_NAME_LENGTH} characters`);
-  }
-  if (countryId !== undefined && (!Number.isInteger(countryId) || countryId <= 0)) {
-    return badRequest(reply, "countryId must be a positive integer");
   }
 
   const passwordHash = await hashPassword(password);
@@ -88,6 +75,48 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
           max: 5,
           timeWindow: "1 minute",
         },
+      },
+      schema: {
+        description: "Register a new user account.",
+        tags: ["users"],
+        body: {
+          type: "object",
+          // Fastify's AJV compiler runs with removeAdditional: true by
+          // default, so this doesn't reject a request carrying an unknown
+          // field (e.g. a stray "isAdmin") - it silently strips it before
+          // the handler ever sees it. Verified in
+          // tests/users.validation.test.ts rather than assumed.
+          additionalProperties: false,
+          required: ["email", "password", "displayName"],
+          properties: {
+            email: { type: "string", format: "email", maxLength: MAX_EMAIL_LENGTH },
+            password: { type: "string", minLength: MIN_PASSWORD_LENGTH },
+            displayName: { type: "string", minLength: 1, maxLength: MAX_DISPLAY_NAME_LENGTH },
+            countryId: { type: "integer", minimum: 1 },
+          },
+        },
+        response: {
+          201: {
+            type: "object",
+            properties: { user: userSchema },
+            required: ["user"],
+          },
+          400: errorResponseSchema,
+          409: errorResponseSchema,
+        },
+      },
+      // Runs before schema validation, so a client sending " Test@Example.com "
+      // or untrimmed whitespace around displayName still validates and
+      // registers cleanly instead of failing the format check on raw input.
+      preValidation: (request, reply, done) => {
+        const body = request.body as Partial<RegisterUserBody> | undefined;
+        if (typeof body?.email === "string") {
+          body.email = body.email.trim().toLowerCase();
+        }
+        if (typeof body?.displayName === "string") {
+          body.displayName = body.displayName.trim();
+        }
+        done();
       },
     },
     registerUser,
