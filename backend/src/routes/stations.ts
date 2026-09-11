@@ -5,6 +5,8 @@ import {
   findStationById,
   listStations,
   updateStation,
+  DEFAULT_STATION_LIST_LIMIT,
+  MAX_STATION_LIST_LIMIT,
   DuplicateStreamUrlError,
   InvalidCountryError,
   InvalidGenreError,
@@ -15,6 +17,7 @@ import {
   createStationBodySchema,
   stationSchema,
   updateStationBodySchema,
+  MAX_STATION_SEARCH_LENGTH,
 } from "../schemas/stations.js";
 
 function badRequest(reply: FastifyReply, message: string) {
@@ -27,18 +30,37 @@ function stationNotFound(reply: FastifyReply) {
 
 interface ListStationsQuery {
   countryId?: number;
+  genreId?: number;
+  languageId?: number;
+  q?: string;
+  limit?: number;
+  offset?: number;
 }
 
-async function listStationsHandler(
-  request: FastifyRequest<{ Querystring: ListStationsQuery }>,
-) {
+async function listStationsHandler(request: FastifyRequest<{ Querystring: ListStationsQuery }>) {
+  const { countryId, genreId, languageId, q, limit, offset } = request.query;
   // Always active-only: this is the public catalog listing, never a place
   // a curated-off (Step 17) or not-yet-approved station should appear.
   // Admin tooling that needs to see everything queries the repository
   // directly (or gets its own route) rather than this one growing a mode
   // switch.
-  const stations = await listStations({ countryId: request.query.countryId, activeOnly: true });
-  return { stations };
+  const { stations, total } = await listStations({
+    countryId,
+    genreId,
+    languageId,
+    search: q,
+    activeOnly: true,
+    limit,
+    offset,
+  });
+  return {
+    stations,
+    pagination: {
+      total,
+      limit: limit ?? DEFAULT_STATION_LIST_LIMIT,
+      offset: offset ?? 0,
+    },
+  };
 }
 
 async function getStationHandler(
@@ -149,21 +171,47 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
     "/stations",
     {
       schema: {
-        description: "Lists active radio stations, optionally filtered to one country.",
+        description:
+          "Lists active radio stations. Filter with countryId/genreId/languageId " +
+          "(each narrows the results further, combined with AND) and/or q (a " +
+          "case-insensitive substring match against the station name). Paginated " +
+          `with limit (default ${DEFAULT_STATION_LIST_LIMIT}, max ${MAX_STATION_LIST_LIMIT}) and offset.`,
         tags: ["stations"],
         querystring: {
           type: "object",
           additionalProperties: false,
           properties: {
             countryId: { type: "integer", minimum: 1 },
+            genreId: { type: "integer", minimum: 1 },
+            languageId: { type: "integer", minimum: 1 },
+            q: { type: "string", minLength: 1, maxLength: MAX_STATION_SEARCH_LENGTH },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: MAX_STATION_LIST_LIMIT,
+              default: DEFAULT_STATION_LIST_LIMIT,
+            },
+            offset: { type: "integer", minimum: 0, default: 0 },
           },
         },
         response: {
           200: {
             type: "object",
-            properties: { stations: { type: "array", items: stationSchema } },
-            required: ["stations"],
+            properties: {
+              stations: { type: "array", items: stationSchema },
+              pagination: {
+                type: "object",
+                properties: {
+                  total: { type: "integer" },
+                  limit: { type: "integer" },
+                  offset: { type: "integer" },
+                },
+                required: ["total", "limit", "offset"],
+              },
+            },
+            required: ["stations", "pagination"],
           },
+          400: errorResponseSchema,
         },
       },
     },

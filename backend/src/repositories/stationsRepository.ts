@@ -30,6 +30,7 @@ interface StationRow {
   languages: Language[] | null;
   created_at: string;
   updated_at: string;
+  total_count: string;
 }
 
 export class DuplicateStreamUrlError extends Error {
@@ -70,6 +71,12 @@ const FOREIGN_KEY_VIOLATION = "23503";
 // station to exactly one row while still fetching everything in a single
 // round trip. COALESCE(..., '[]') turns "no rows matched" into an empty
 // array rather than a SQL NULL, so callers never need a null check.
+//
+// COUNT(*) OVER() adds the filtered-but-unpaginated total to every row in
+// one pass - the alternative (a second COUNT(*) query with the same WHERE
+// clause) would be two round trips and two chances for the filter logic to
+// drift apart between them. Harmless overhead on the single-row lookups
+// that also use this base query (findStationById) - just an unused column.
 const STATION_SELECT = `
   SELECT
     s.id, s.country_id, s.name, s.stream_url, s.website_url, s.description,
@@ -85,9 +92,21 @@ const STATION_SELECT = `
        FROM station_languages sl JOIN languages l ON l.id = sl.language_id
        WHERE sl.station_id = s.id),
       '[]'
-    ) AS languages
+    ) AS languages,
+    COUNT(*) OVER() AS total_count
   FROM radio_stations s
 `;
+
+// Postgres's default LIKE/ILIKE escape character is already backslash, so
+// escaping a caller's raw search text this way (before it's wrapped in %...%
+// and bound as a single parameter - never concatenated into the query
+// string) stops a search for a literal "%" or "_" from being misread as a
+// wildcard. Not a SQL-injection concern either way (this is a bound
+// parameter, not interpolated SQL) - purely about search results actually
+// matching what the user typed.
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
 
 function toStation(row: StationRow): Station {
   return {
@@ -196,15 +215,32 @@ export async function createStation(input: NewStation): Promise<Station> {
   return station;
 }
 
+export const DEFAULT_STATION_LIST_LIMIT = 50;
+export const MAX_STATION_LIST_LIMIT = 100;
+
 export interface StationListFilter {
   countryId?: number;
+  genreId?: number;
+  languageId?: number;
+  // Case-insensitive substring match against the station name. Plain
+  // ILIKE, not a full-text index - appropriate for a curated catalog on
+  // the order of dozens to a few hundred stations, not the kind of corpus
+  // that would justify tsvector's added complexity.
+  search?: string;
   // Defaults to true (the public catalog never surfaces a curated-off
   // station); an admin-facing caller passes false explicitly to see
   // everything, e.g. while deciding what to re-activate.
   activeOnly?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
-export async function listStations(filter: StationListFilter = {}): Promise<Station[]> {
+export interface StationListResult {
+  stations: Station[];
+  total: number;
+}
+
+export async function listStations(filter: StationListFilter = {}): Promise<StationListResult> {
   const conditions: string[] = [];
   const values: unknown[] = [];
 
@@ -215,10 +251,43 @@ export async function listStations(filter: StationListFilter = {}): Promise<Stat
   if (filter.activeOnly !== false) {
     conditions.push("s.is_active = true");
   }
+  if (filter.genreId !== undefined) {
+    values.push(filter.genreId);
+    conditions.push(
+      `EXISTS (SELECT 1 FROM station_genres sg WHERE sg.station_id = s.id AND sg.genre_id = $${values.length})`,
+    );
+  }
+  if (filter.languageId !== undefined) {
+    values.push(filter.languageId);
+    conditions.push(
+      `EXISTS (SELECT 1 FROM station_languages sl WHERE sl.station_id = s.id AND sl.language_id = $${values.length})`,
+    );
+  }
+  if (filter.search !== undefined && filter.search.trim() !== "") {
+    values.push(`%${escapeLikePattern(filter.search.trim())}%`);
+    conditions.push(`s.name ILIKE $${values.length}`);
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const result = await query<StationRow>(`${STATION_SELECT} ${where} ORDER BY s.name ASC`, values);
-  return result.rows.map(toStation);
+
+  // Capped here too, not just in the route's JSON Schema (maximum: 100) -
+  // this repository function is public and a future internal caller
+  // (an admin tool, a background job) that forgets to apply that same
+  // schema shouldn't be able to trigger an unbounded scan by omitting a
+  // limit or passing an enormous one.
+  const limit = Math.min(Math.max(filter.limit ?? DEFAULT_STATION_LIST_LIMIT, 1), MAX_STATION_LIST_LIMIT);
+  const offset = Math.max(filter.offset ?? 0, 0);
+  values.push(limit);
+  const limitPlaceholder = `$${values.length}`;
+  values.push(offset);
+  const offsetPlaceholder = `$${values.length}`;
+
+  const result = await query<StationRow>(
+    `${STATION_SELECT} ${where} ORDER BY s.name ASC LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+    values,
+  );
+  const total = result.rows[0] ? Number(result.rows[0].total_count) : 0;
+  return { stations: result.rows.map(toStation), total };
 }
 
 export async function findStationById(id: number): Promise<Station | null> {

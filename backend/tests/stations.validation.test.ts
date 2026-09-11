@@ -133,4 +133,44 @@ describe("GET /v1/stations validation", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
   });
+
+  it("rejects a non-integer genreId or languageId", async () => {
+    const app = buildApp();
+    const badGenre = await app.inject({ method: "GET", url: "/v1/stations?genreId=abc" });
+    expect(badGenre.statusCode).toBe(400);
+
+    const badLanguage = await app.inject({ method: "GET", url: "/v1/stations?languageId=abc" });
+    expect(badLanguage.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects a limit of 0, a negative limit, or a limit over the maximum", async () => {
+    const app = buildApp();
+    const zero = await app.inject({ method: "GET", url: "/v1/stations?limit=0" });
+    expect(zero.statusCode).toBe(400);
+
+    const negative = await app.inject({ method: "GET", url: "/v1/stations?limit=-5" });
+    expect(negative.statusCode).toBe(400);
+
+    const overMax = await app.inject({ method: "GET", url: "/v1/stations?limit=101" });
+    expect(overMax.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects a negative offset", async () => {
+    const app = buildApp();
+    const response = await app.inject({ method: "GET", url: "/v1/stations?offset=-1" });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an empty q and a q longer than the maximum", async () => {
+    const app = buildApp();
+    const empty = await app.inject({ method: "GET", url: "/v1/stations?q=" });
+    expect(empty.statusCode).toBe(400);
+
+    const tooLong = await app.inject({ method: "GET", url: `/v1/stations?q=${"a".repeat(201)}` });
+    expect(tooLong.statusCode).toBe(400);
+    await app.close();
+  });
 });

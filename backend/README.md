@@ -102,8 +102,12 @@ is still calling it.
   the account after verifying the password, for the same reason as password
   changes above. `401` if the password is wrong. `204` on success.
   Rate-limited to 5/min.
-- `GET /v1/stations` — lists active radio stations. Optional `?countryId=`
-  filter. Public, no auth.
+- `GET /v1/stations` — lists active radio stations. Public, no auth.
+  Optional `?countryId=`/`?genreId=`/`?languageId=` filters (combined with
+  AND) and `?q=` (case-insensitive substring match against the name).
+  Paginated with `?limit=` (default 50, max 100) and `?offset=`; the
+  response's `pagination.total` reflects the filtered-but-unpaginated
+  count.
 - `GET /v1/stations/:id` — a single active station. `404` for an unknown id
   or a curated-off (inactive) one — the same response either way, see
   "Radio Master Catalog" below.
@@ -380,6 +384,46 @@ objects, not just echoed ids; full-set replacement, untouched-when-omitted,
 and cleared-with-`[]` on update; `400` for an unknown genre or language id;
 a duplicate id within the same request tolerated rather than erroring; and
 a deleted station's junction rows confirmed gone via a direct query).
+
+### Search, filtering, and pagination (Step 14)
+
+`GET /v1/stations` combines four independent narrowing mechanisms, all
+`AND`ed together when given at once: `countryId`, `genreId`, `languageId`
+(each an `EXISTS` subquery against the relevant table/junction, so it never
+duplicates a row the way a direct `JOIN` on two separate one-to-many
+relations would), and `q` (a case-insensitive `ILIKE` substring match
+against the station name — plain `ILIKE`, not a full-text index, which
+would be premature complexity for a curated catalog on the order of dozens
+to a few hundred stations rather than a large free-text corpus).
+
+- **Every response is paginated**, never an unbounded "return everything."
+  `limit` defaults to 50 and is capped at 100 — enforced both in the route's
+  JSON Schema (a request over the cap is a clean `400`) and again inside
+  `listStations` itself, so a future internal caller that reaches the
+  repository directly (an admin tool, a background job) can't trigger an
+  unbounded scan just by forgetting to apply that same schema.
+- **`pagination.total` is the filtered-but-unpaginated count**, computed
+  with `COUNT(*) OVER()` in the same query as the page of results rather
+  than a second round-trip with a separately-maintained `WHERE` clause —
+  one query, and the count can never drift out of sync with what actually
+  matched.
+- **A literal `%` or `_` in a search term is escaped before being bound as
+  the `ILIKE` pattern**, so a search for a station whose name genuinely
+  contains one of those characters doesn't have it misread as a SQL
+  wildcard. This was never a SQL-injection concern either way (the term is
+  always a bound parameter, never concatenated into the query string) —
+  purely about search results matching what the user actually typed.
+
+Verified end-to-end against a real database in `tests/stations.test.ts`:
+a case-insensitive substring search that finds a real station and excludes
+unrelated ones; a literal `%` in a search term matching nothing (proving
+the escape works, not just the happy path); `genreId`/`languageId` filters
+applied independently and in combination (including a combination that
+matches nothing, proving `AND` semantics rather than `OR`); and a full
+`limit`/`offset` pagination walk across two pages with an exact, stable
+`pagination.total` throughout. `tests/stations.validation.test.ts` covers
+every rejected shape: non-integer `genreId`/`languageId`, `limit` of `0`,
+negative, or over 100, a negative `offset`, and an empty or over-length `q`.
 
 ## Security baseline
 

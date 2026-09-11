@@ -489,3 +489,180 @@ describe("radio station genres and languages", () => {
     await app.close();
   });
 });
+
+describe("radio station search, filtering, and pagination", () => {
+  it("finds a station by a case-insensitive substring match on its name", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "search");
+    // Unique enough that no other test's data could ever coincidentally
+    // match this search term.
+    const token = `ZzyxSearch${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: `Roots ${token} Radio`, streamUrl: uniqueStreamUrl("search") },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    // Matches regardless of case, and as a substring, not just a prefix.
+    const found = await app.inject({ method: "GET", url: `/v1/stations?q=${token.toLowerCase()}` });
+    expect(found.statusCode).toBe(200);
+    const foundIds = (found.json().stations as Array<{ id: number }>).map((s) => s.id);
+    expect(foundIds).toEqual([stationId]);
+    expect(found.json().pagination.total).toBe(1);
+
+    const notFound = await app.inject({ method: "GET", url: "/v1/stations?q=NoSuchStationExists" });
+    const notFoundIds = (notFound.json().stations as Array<{ id: number }>).map((s) => s.id);
+    expect(notFoundIds).not.toContain(stationId);
+
+    await app.close();
+  });
+
+  it("treats a literal % or _ in the search term as a literal character, not a wildcard", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "search-escape");
+    const token = `Esc${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: `${token} Radio`, streamUrl: uniqueStreamUrl("search-escape") },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    // A literal "%" in the query must not act as an ILIKE wildcard - a
+    // search for "<token>%" should match nothing, since the actual name
+    // has no literal percent sign in it.
+    const response = await app.inject({ method: "GET", url: `/v1/stations?q=${token}%25` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().stations).toEqual([]);
+
+    await app.close();
+  });
+
+  it("filters by genreId and languageId independently and combined", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "filter");
+    const [genreA, genreB] = await getRealGenreIds(app, 2);
+    const [languageA, languageB] = await getRealLanguageIds(app, 2);
+    const marker = `Filter${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    const stationA = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: `${marker} Station A`,
+        streamUrl: uniqueStreamUrl("filter-a"),
+        genreIds: [genreA],
+        languageIds: [languageA],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationAId = stationA.json().station.id as number;
+
+    const stationB = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: `${marker} Station B`,
+        streamUrl: uniqueStreamUrl("filter-b"),
+        genreIds: [genreB],
+        languageIds: [languageB],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationBId = stationB.json().station.id as number;
+
+    // Scoped with the shared search marker throughout so the assertions
+    // are exact-equality against a fully controlled result set, not just
+    // "contains" checks against the whole live catalog.
+    const byGenreA = await app.inject({
+      method: "GET",
+      url: `/v1/stations?q=${marker}&genreId=${genreA}`,
+    });
+    expect((byGenreA.json().stations as Array<{ id: number }>).map((s) => s.id)).toEqual([
+      stationAId,
+    ]);
+
+    const byLanguageB = await app.inject({
+      method: "GET",
+      url: `/v1/stations?q=${marker}&languageId=${languageB}`,
+    });
+    expect((byLanguageB.json().stations as Array<{ id: number }>).map((s) => s.id)).toEqual([
+      stationBId,
+    ]);
+
+    // AND semantics: genreA + languageB never co-occur on either station,
+    // so combining them narrows to nothing.
+    const impossibleCombo = await app.inject({
+      method: "GET",
+      url: `/v1/stations?q=${marker}&genreId=${genreA}&languageId=${languageB}`,
+    });
+    expect(impossibleCombo.json().stations).toEqual([]);
+
+    // Both stations still match with just the shared marker and no tag
+    // filter.
+    const both = await app.inject({ method: "GET", url: `/v1/stations?q=${marker}` });
+    expect((both.json().stations as Array<{ id: number }>).map((s) => s.id).sort()).toEqual(
+      [stationAId, stationBId].sort(),
+    );
+
+    await app.close();
+  });
+
+  it("paginates with limit/offset and reports an accurate total across pages", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "paginate");
+    const marker = `Page${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    const createdIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/stations",
+        // Zero-padded so default name-ascending order is deterministic.
+        payload: { countryId, name: `${marker} 0${i}`, streamUrl: uniqueStreamUrl(`page-${i}`) },
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      createdIds.push(create.json().station.id as number);
+    }
+
+    const pageOne = await app.inject({ method: "GET", url: `/v1/stations?q=${marker}&limit=2&offset=0` });
+    expect(pageOne.json().stations).toHaveLength(2);
+    expect(pageOne.json().pagination).toEqual({ total: 3, limit: 2, offset: 0 });
+    expect((pageOne.json().stations as Array<{ id: number }>).map((s) => s.id)).toEqual(
+      createdIds.slice(0, 2),
+    );
+
+    const pageTwo = await app.inject({ method: "GET", url: `/v1/stations?q=${marker}&limit=2&offset=2` });
+    expect(pageTwo.json().stations).toHaveLength(1);
+    expect(pageTwo.json().pagination).toEqual({ total: 3, limit: 2, offset: 2 });
+    expect((pageTwo.json().stations as Array<{ id: number }>).map((s) => s.id)).toEqual([
+      createdIds[2],
+    ]);
+
+    // Defaults apply when limit/offset are omitted entirely.
+    const defaults = await app.inject({ method: "GET", url: `/v1/stations?q=${marker}` });
+    expect(defaults.json().pagination).toEqual({ total: 3, limit: 50, offset: 0 });
+    expect(defaults.json().stations).toHaveLength(3);
+
+    await app.close();
+  });
+
+  it("accepts limit at exactly the documented maximum", async () => {
+    const app = buildApp();
+    const response = await app.inject({ method: "GET", url: "/v1/stations?limit=100" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().pagination.limit).toBe(100);
+
+    await app.close();
+  });
+});

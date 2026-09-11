@@ -6,6 +6,7 @@ import { genreSchema, languageSchema } from "./common.js";
 export const MAX_STATION_NAME_LENGTH = 200; // matches radio_stations.name's column width
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
 export const MAX_DESCRIPTION_LENGTH = 2000;
+export const MAX_STATION_SEARCH_LENGTH = 200; // matches MAX_STATION_NAME_LENGTH - never a longer match target
 // Generous relative to the ~12 seeded genres and 4 seeded languages (both
 // tables are meant to keep growing via curation), while still bounding an
 // abusive request that tries to submit an enormous id array.
