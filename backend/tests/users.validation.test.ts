@@ -6,7 +6,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "not-an-email", password: "longenough", displayName: "Test" },
     });
 
@@ -18,7 +18,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "test@example.com", password: "short", displayName: "Test" },
     });
 
@@ -30,7 +30,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "test@example.com", password: "longenough" },
     });
 
@@ -42,7 +42,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "test@example.com", password: "a".repeat(73), displayName: "Test" },
     });
 
@@ -56,7 +56,7 @@ describe("POST /users validation", () => {
     const password = "a".repeat(71) + "☃";
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "test@example.com", password, displayName: "Test" },
     });
 
@@ -68,7 +68,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: {
         email: "test@example.com",
         password: "longenough",
@@ -85,7 +85,7 @@ describe("POST /users validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email: "test@example.com", password: "longenough", displayName: "a".repeat(121) },
     });
 

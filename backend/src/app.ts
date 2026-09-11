@@ -75,8 +75,10 @@ export function buildApp() {
       openapi: {
         info: {
           title: "Caribbean Radio & Events Platform API",
-          description: "Foundation backend API (Steps 01-09).",
-          version: "0.1.0",
+          description:
+            "Foundation backend API (Steps 01-10). All business-domain routes are " +
+            "under /v1 - see README.md 'API versioning' for the policy.",
+          version: "1.0.0",
         },
         components: {
           securitySchemes: {
@@ -131,11 +133,31 @@ export function buildApp() {
     }
   });
 
+  // Unversioned by design: load balancers, uptime monitors, and orchestrator
+  // liveness/readiness probes are configured once against a fixed path and
+  // are not "clients" of the business API in the sense that needs a
+  // migration path - versioning them would only add churn to
+  // infrastructure config for no compatibility benefit.
   app.register(healthRoutes);
-  app.register(countriesRoutes);
-  app.register(usersRoutes);
-  app.register(authRoutes);
-  app.register(meRoutes);
+
+  // Every business-domain route lives under /v1. This app has no shipped
+  // clients yet, so a clean versioned start costs nothing now - but mobile
+  // clients (Android/iOS/Windows) are a Cross-Cutting Non-Negotiable, and
+  // once real installs exist in app stores, they can be stuck on an old API
+  // shape for as long as a store review cycle takes. Introducing versioning
+  // after that point would mean retrofitting it under live traffic instead
+  // of choosing the path today. A future breaking change gets its own
+  // /v2 plugin registered alongside this one, not a mutation of /v1 - see
+  // README.md "API versioning".
+  app.register(
+    async (v1) => {
+      v1.register(countriesRoutes);
+      v1.register(usersRoutes);
+      v1.register(authRoutes);
+      v1.register(meRoutes);
+    },
+    { prefix: "/v1" },
+  );
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const statusCode = error.statusCode ?? 500;

@@ -45,7 +45,7 @@ describe("app.authenticate", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${tampered}` },
     });
 
@@ -69,7 +69,7 @@ describe("app.authenticate", () => {
       Array.from({ length: CONCURRENT_REQUESTS }, () =>
         app.inject({
           method: "GET",
-          url: "/me",
+          url: "/v1/me",
           headers: { authorization: `Bearer ${tampered}` },
         }),
       ),

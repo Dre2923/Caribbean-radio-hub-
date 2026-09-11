@@ -6,7 +6,7 @@ describe("POST /auth/login validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { password: "whatever123" },
     });
 
@@ -19,7 +19,7 @@ describe("POST /auth/login validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email: "test@example.com" },
     });
 
@@ -31,7 +31,7 @@ describe("POST /auth/login validation", () => {
 describe("GET /me", () => {
   it("rejects a request with no token", async () => {
     const app = buildApp();
-    const response = await app.inject({ method: "GET", url: "/me" });
+    const response = await app.inject({ method: "GET", url: "/v1/me" });
 
     expect(response.statusCode).toBe(401);
     await app.close();
@@ -41,7 +41,7 @@ describe("GET /me", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: "Bearer not-a-real-token" },
     });
 

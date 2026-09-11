@@ -6,7 +6,7 @@ describe("POST /auth/password-reset/request validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/request",
+      url: "/v1/auth/password-reset/request",
       payload: {},
     });
 
@@ -19,7 +19,7 @@ describe("POST /auth/password-reset/request validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/request",
+      url: "/v1/auth/password-reset/request",
       payload: { email: "not-a-real-email-at-all" },
     });
 
@@ -34,7 +34,7 @@ describe("POST /auth/password-reset/confirm validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { newPassword: "longenough123" },
     });
 
@@ -46,7 +46,7 @@ describe("POST /auth/password-reset/confirm validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: "some-token-value" },
     });
 
@@ -58,7 +58,7 @@ describe("POST /auth/password-reset/confirm validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: "some-token-value", newPassword: "short" },
     });
 
@@ -70,7 +70,7 @@ describe("POST /auth/password-reset/confirm validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: "definitely-not-a-real-token", newPassword: "longenough123" },
     });
 

@@ -6,7 +6,7 @@ describe("PATCH /me validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "PATCH",
-      url: "/me",
+      url: "/v1/me",
       payload: { displayName: "New Name" },
     });
 
@@ -21,7 +21,7 @@ describe("PATCH /me validation", () => {
 
     const response = await app.inject({
       method: "PATCH",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
       payload: {},
     });
@@ -37,7 +37,7 @@ describe("PATCH /me validation", () => {
 
     const response = await app.inject({
       method: "PATCH",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
       payload: { email: "not-an-email" },
     });
@@ -53,7 +53,7 @@ describe("PATCH /me validation", () => {
 
     const response = await app.inject({
       method: "PATCH",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
       payload: { displayName: "a".repeat(121) },
     });
@@ -68,7 +68,7 @@ describe("POST /me/password validation", () => {
     const app = buildApp();
     const response = await app.inject({
       method: "POST",
-      url: "/me/password",
+      url: "/v1/me/password",
       payload: { currentPassword: "a", newPassword: "longenough" },
     });
 
@@ -83,7 +83,7 @@ describe("POST /me/password validation", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/me/password",
+      url: "/v1/me/password",
       headers: { authorization: `Bearer ${token}` },
       payload: { newPassword: "longenough" },
     });
@@ -99,7 +99,7 @@ describe("POST /me/password validation", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/me/password",
+      url: "/v1/me/password",
       headers: { authorization: `Bearer ${token}` },
       payload: { currentPassword: "whatever123", newPassword: "short" },
     });
@@ -115,7 +115,7 @@ describe("POST /me/password validation", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/me/password",
+      url: "/v1/me/password",
       headers: { authorization: `Bearer ${token}` },
       payload: { currentPassword: "whatever123", newPassword: "a".repeat(73) },
     });
@@ -128,7 +128,7 @@ describe("POST /me/password validation", () => {
 describe("DELETE /me validation", () => {
   it("rejects a request with no token", async () => {
     const app = buildApp();
-    const response = await app.inject({ method: "DELETE", url: "/me" });
+    const response = await app.inject({ method: "DELETE", url: "/v1/me" });
 
     expect(response.statusCode).toBe(401);
     await app.close();
@@ -141,7 +141,7 @@ describe("DELETE /me validation", () => {
 
     const response = await app.inject({
       method: "DELETE",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
       payload: {},
     });

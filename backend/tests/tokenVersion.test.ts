@@ -23,14 +23,14 @@ describe("token invalidation on password change", () => {
 
     const registerResponse = await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email, password: originalPassword, displayName: "Token Version Test" },
     });
     expect(registerResponse.statusCode).toBe(201);
 
     const firstLogin = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password: originalPassword },
     });
     expect(firstLogin.statusCode).toBe(200);
@@ -39,14 +39,14 @@ describe("token invalidation on password change", () => {
     // Baseline: the token works before any password change.
     const beforeChange = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${oldToken}` },
     });
     expect(beforeChange.statusCode).toBe(200);
 
     const changePassword = await app.inject({
       method: "POST",
-      url: "/me/password",
+      url: "/v1/me/password",
       headers: { authorization: `Bearer ${oldToken}` },
       payload: { currentPassword: originalPassword, newPassword },
     });
@@ -56,7 +56,7 @@ describe("token invalidation on password change", () => {
     // rejected, not just some other unrelated old token.
     const afterChange = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${oldToken}` },
     });
     expect(afterChange.statusCode).toBe(401);
@@ -66,7 +66,7 @@ describe("token invalidation on password change", () => {
     // blanket "every token for this user is broken" bug.
     const secondLogin = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password: newPassword },
     });
     expect(secondLogin.statusCode).toBe(200);
@@ -74,7 +74,7 @@ describe("token invalidation on password change", () => {
 
     const afterFreshLogin = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${newToken}` },
     });
     expect(afterFreshLogin.statusCode).toBe(200);
@@ -89,19 +89,19 @@ describe("token invalidation on password change", () => {
 
     await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email, password, displayName: "Token Version Delete Test" },
     });
     const login = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password },
     });
     const token = login.json().token as string;
 
     const deleteResponse = await app.inject({
       method: "DELETE",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
       payload: { password },
     });
@@ -112,7 +112,7 @@ describe("token invalidation on password change", () => {
     // not get folded into the version-mismatch check as a 401.
     const afterDelete = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${token}` },
     });
     expect(afterDelete.statusCode).toBe(404);

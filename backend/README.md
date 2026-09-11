@@ -22,12 +22,38 @@ npm run migrate:up            # applies all pending migrations
 npm run dev                   # starts the API on :3000
 ```
 
+## API versioning
+
+Every business-domain route is served under `/v1` (e.g. `POST /v1/users`,
+not `POST /users`). `GET /health` and `GET /health/db` are the deliberate
+exception — they're infrastructure endpoints (load balancer / uptime
+monitor / orchestrator probes configured once against a fixed path), not
+API contract surface a client depends on, so they stay unversioned.
+
+This app has no shipped clients yet, so starting versioned costs nothing
+today — but mobile clients (Android, iOS/iPadOS, Windows) are a
+Cross-Cutting Non-Negotiable, and once real installs exist in app stores, a
+given install can be stuck on whatever API shape it was built against for
+as long as that platform's review/update cycle takes. Retrofitting
+versioning after that point means doing it under live traffic with old
+clients already depending on the unversioned shape; doing it now, before
+any client exists, costs a route prefix and nothing else.
+
+**Policy going forward**: an additive, backward-compatible change (a new
+field, a new endpoint, a new optional parameter) ships straight into `/v1`
+— it doesn't need a new version. A genuine breaking change (removing/renaming
+a field, changing a status code's meaning, changing what a field requires)
+gets a new `/v2` plugin registered alongside `/v1` in `src/app.ts` (see the
+comment there), so existing clients on `/v1` keep working unchanged while
+new clients move to `/v2` — `/v1` is never mutated out from under whoever
+is still calling it.
+
 ## Endpoints
 
 - `GET /health` — liveness check, no external dependencies.
 - `GET /health/db` — readiness check, verifies the database connection.
-- `GET /countries` — lists the active launch countries (database-driven).
-- `POST /users` — registers a user account. Body: `{ email, password, displayName, countryId? }`.
+- `GET /v1/countries` — lists the active launch countries (database-driven).
+- `POST /v1/users` — registers a user account. Body: `{ email, password, displayName, countryId? }`.
   Passwords are hashed with bcrypt before storage and are never returned in
   responses.
   - `400` — invalid email, password outside 8–72 bytes (bcrypt's hashing
@@ -35,36 +61,36 @@ npm run dev                   # starts the API on :3000
     displayName missing/too long, or countryId not a positive integer.
   - `409` — email already registered.
   - `400` — countryId doesn't match a known country.
-- `POST /auth/login` — body: `{ email, password }`. Returns `{ token, user }`
+- `POST /v1/auth/login` — body: `{ email, password }`. Returns `{ token, user }`
   on success (a JWT, `JWT_EXPIRES_IN` default `7d`) or `401` with the exact
   same message (`"Invalid email or password"`) whether the email doesn't
   exist or the password is wrong — timing is kept constant too (a real
   bcrypt comparison always runs, against a dummy hash when the email isn't
   found), so a login attempt can't be used to enumerate registered emails.
   Rate-limited to 5/min, the tightest limit in the API.
-- `POST /auth/password-reset/request` — body: `{ email }`. Always returns
+- `POST /v1/auth/password-reset/request` — body: `{ email }`. Always returns
   the same `200` and generic message regardless of whether the email is
   registered (no enumeration). If it is, a single-use, 1-hour-expiring
-  reset token is generated and (for now — see "Password reset email
-  delivery" below) logged rather than emailed. Rate-limited to 5/min.
-- `POST /auth/password-reset/confirm` — body: `{ token, newPassword }`.
+  reset token is generated and emailed (see "Password reset email delivery"
+  below). Rate-limited to 5/min.
+- `POST /v1/auth/password-reset/confirm` — body: `{ token, newPassword }`.
   Sets the new password, invalidates the reset token, and invalidates
   every session token issued before the reset (same mechanism as
-  `POST /me/password`) — a reset triggered by a suspected compromise kills
+  `POST /v1/me/password`) — a reset triggered by a suspected compromise kills
   any session an attacker might already hold, not just the credential.
   `400` with a generic "Invalid or expired reset token" for any invalid,
   expired, already-used, or unknown token — the same message regardless of
   which, so this can't be used to probe token validity either. Requesting
   a new reset link invalidates any earlier unused one for that account.
   Rate-limited to 5/min.
-- `GET /me` — requires `Authorization: Bearer <token>`. Returns the current
+- `GET /v1/me` — requires `Authorization: Bearer <token>`. Returns the current
   user's profile. `401` on a missing/invalid/expired/tampered token.
-- `PATCH /me` — requires auth. Body: `{ email?, displayName?, countryId? }`,
+- `PATCH /v1/me` — requires auth. Body: `{ email?, displayName?, countryId? }`,
   at least one field. Updates only the fields present. `409` on an email
   already taken by another account, `400` on invalid input or an unknown
   countryId. Password changes are deliberately not part of this endpoint —
-  see `POST /me/password` below.
-- `POST /me/password` — requires auth. Body: `{ currentPassword, newPassword }`.
+  see `POST /v1/me/password` below.
+- `POST /v1/me/password` — requires auth. Body: `{ currentPassword, newPassword }`.
   Changing a password requires proving the current one first, so a
   stolen/shared-device token alone can't lock the real owner out. `401` if
   `currentPassword` is wrong, `400` if `newPassword` is outside 8–72 bytes.
@@ -72,7 +98,7 @@ npm run dev                   # starts the API on :3000
   issued before this change (see "Token invalidation" below) — a stolen
   token stops working the moment the real owner changes their password,
   not up to 7 days later when it happens to expire.
-- `DELETE /me` — requires auth. Body: `{ password }`. Permanently deletes
+- `DELETE /v1/me` — requires auth. Body: `{ password }`. Permanently deletes
   the account after verifying the password, for the same reason as password
   changes above. `401` if the password is wrong. `204` on success.
   Rate-limited to 5/min.
@@ -84,21 +110,21 @@ API yet. Raw spec at `/docs/json`.
 
 ## Request validation
 
-`POST /users` validates its body against a JSON Schema (email format,
+`POST /v1/users` validates its body against a JSON Schema (email format,
 password length, displayName length, countryId type) rather than hand-rolled
 if/else checks — Fastify rejects malformed requests before the handler ever
 runs, and the same schema documents the endpoint in `/docs`. Two things stay
 outside the schema deliberately:
 - The bcrypt 72-byte password ceiling (JSON Schema's `maxLength` counts
   UTF-16 code units, not UTF-8 bytes, so it can't express this correctly).
-- `POST /auth/login`'s body has no schema at all: a schema-validation
+- `POST /v1/auth/login`'s body has no schema at all: a schema-validation
   failure would return a different status/message than a wrong password,
   undermining the anti-enumeration behavior above. Every invalid login
   input returns the identical 401.
 
 ## Password reset
 
-`POST /auth/password-reset/request` + `POST /auth/password-reset/confirm`
+`POST /v1/auth/password-reset/request` + `POST /v1/auth/password-reset/confirm`
 give an account owner a way to recover access without knowing their
 current password — the one piece a "change password" endpoint alone can
 never cover, since it requires the current password as proof of identity.
@@ -116,7 +142,7 @@ never cover, since it requires the current password as proof of identity.
   or not the email is registered; `confirm` always returns the same
   generic message for any invalid/expired/used/unknown token.
 - **Kills existing sessions**: `confirm` reuses the same `token_version`
-  bump as `POST /me/password` (see below), so a reset invalidates every
+  bump as `POST /v1/me/password` (see below), so a reset invalidates every
   JWT issued before it — the scenario this exists for (recovering from a
   suspected compromise) would be undermined if an attacker's existing
   session survived the reset.
@@ -128,7 +154,7 @@ never cover, since it requires the current password as proof of identity.
 
 ### Password reset email delivery
 
-`POST /auth/password-reset/request` sends a real password-reset email
+`POST /v1/auth/password-reset/request` sends a real password-reset email
 through a transactional outbox — the same pattern used by high-volume
 production systems, not a development stand-in:
 
@@ -180,7 +206,7 @@ response.
 
 `users.token_version` (migration `1700000003000_users_token_version`)
 closes that gap. Login embeds the account's current `token_version` in the
-JWT as `tv`. `POST /me/password` atomically bumps `token_version` in the
+JWT as `tv`. `POST /v1/me/password` atomically bumps `token_version` in the
 same statement as the password update (so the two can never drift out of
 sync from a partial failure). `app.authenticate` compares a token's `tv`
 against the account's current value on every request and rejects a
@@ -202,7 +228,7 @@ confused with a version mismatch.
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,
   X-Content-Type-Options, X-Frame-Options, etc.).
 - **Rate limiting**: `@fastify/rate-limit` caps the API at 100 req/min per
-  client by default; `POST /users` has its own tighter limit (5/min) since
+  client by default; `POST /v1/users` has its own tighter limit (5/min) since
   it hashes a password and writes to the DB on every call.
 - **TLS certificate validation**: when `PGSSL=true`, the Postgres connection
   validates the server certificate by default. Only set
@@ -217,7 +243,7 @@ confused with a version mismatch.
 - **JWT_SECRET is required and validated**: the server refuses to start with
   a secret shorter than 32 characters. Generate one with
   `openssl rand -base64 48`.
-- **No email enumeration via login**: see `POST /auth/login` above.
+- **No email enumeration via login**: see `POST /v1/auth/login` above.
 
 ## Production deployment: HTTPS and TRUST_PROXY
 

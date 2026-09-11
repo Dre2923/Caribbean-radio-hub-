@@ -31,7 +31,7 @@ async function requestAndCaptureResetToken(
 ): Promise<string> {
   const requestReset = await app.inject({
     method: "POST",
-    url: "/auth/password-reset/request",
+    url: "/v1/auth/password-reset/request",
     payload: { email },
   });
   expect(requestReset.statusCode).toBe(200);
@@ -67,13 +67,13 @@ describe("password reset flow", () => {
 
     await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email, password: originalPassword, displayName: "Password Reset Test" },
     });
 
     const login = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password: originalPassword },
     });
     const preResetToken = login.json().token as string;
@@ -83,7 +83,7 @@ describe("password reset flow", () => {
 
     const confirmReset = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: rawResetToken, newPassword },
     });
     expect(confirmReset.statusCode).toBe(204);
@@ -91,7 +91,7 @@ describe("password reset flow", () => {
     // The old password must no longer work.
     const oldPasswordLogin = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password: originalPassword },
     });
     expect(oldPasswordLogin.statusCode).toBe(401);
@@ -99,7 +99,7 @@ describe("password reset flow", () => {
     // The new password must work.
     const newPasswordLogin = await app.inject({
       method: "POST",
-      url: "/auth/login",
+      url: "/v1/auth/login",
       payload: { email, password: newPassword },
     });
     expect(newPasswordLogin.statusCode).toBe(200);
@@ -109,7 +109,7 @@ describe("password reset flow", () => {
     // session an attacker might already hold, not just the password.
     const meWithPreResetToken = await app.inject({
       method: "GET",
-      url: "/me",
+      url: "/v1/me",
       headers: { authorization: `Bearer ${preResetToken}` },
     });
     expect(meWithPreResetToken.statusCode).toBe(401);
@@ -118,7 +118,7 @@ describe("password reset flow", () => {
     // with a syntactically valid, previously-real token.
     const replay = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: rawResetToken, newPassword: "should-never-apply-either" },
     });
     expect(replay.statusCode).toBe(400);
@@ -133,7 +133,7 @@ describe("password reset flow", () => {
 
     await app.inject({
       method: "POST",
-      url: "/users",
+      url: "/v1/users",
       payload: { email, password, displayName: "Password Reset Relink Test" },
     });
 
@@ -145,7 +145,7 @@ describe("password reset flow", () => {
     // The first (now-stale) link must no longer work.
     const useFirst = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: firstToken, newPassword: "attempted-with-stale-link" },
     });
     expect(useFirst.statusCode).toBe(400);
@@ -153,7 +153,7 @@ describe("password reset flow", () => {
     // The second (current) link must still work.
     const useSecond = await app.inject({
       method: "POST",
-      url: "/auth/password-reset/confirm",
+      url: "/v1/auth/password-reset/confirm",
       payload: { token: secondToken, newPassword: "applied-with-current-link" },
     });
     expect(useSecond.statusCode).toBe(204);
