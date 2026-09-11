@@ -223,6 +223,50 @@ rejected immediately afterward, a fresh login's token keeps working, and a
 deleted account's token still gets a clean `404` rather than getting
 confused with a version mismatch.
 
+## Authorization: user roles
+
+Every account has a `role` (`'user'` or `'admin'`, migration
+`1700000006000_users_role`), surfaced in `user.role` on registration,
+login, and `GET /v1/me` so a client can conditionally show admin UI. It's
+never client-settable: `POST /v1/users`'s schema strips any `role` field a
+request body tries to send (same `additionalProperties: false` mechanism
+covered in "Request validation" above), and there is no endpoint that lets
+an account set its own or anyone else's role.
+
+- **The only way to become an admin right now is `ADMIN_EMAILS`** (see
+  `.env.example`), a comma-separated allowlist checked on both
+  registration and every login (`ensureBootstrapAdminRole` in
+  `src/repositories/usersRepository.ts`). There's no admin-management
+  endpoint yet — that's the Admin Dashboard (Steps 31–33) — so this
+  config-driven "break-glass" bootstrap is what makes admin-gated routes
+  reachable at all before then. It's deliberately **one-way**: removing an
+  email from `ADMIN_EMAILS` never demotes an existing admin — an operator
+  typo here must never silently lock out the only admin account. Real
+  demotion is a future admin-management concern.
+- **`app.requireAdmin`** (`src/app.ts`) is the guard a route adds to gate
+  itself to admins: `preHandler: [app.authenticate, app.requireAdmin]`
+  (in that order — it reads `request.user`, which only `authenticate`
+  populates). No route uses it yet; it's foundation for Radio Catalog
+  curation, Events moderation, and the Admin Dashboard, all still ahead.
+- **The role is looked up fresh from the database on every request** —
+  deliberately *not* embedded in the JWT. A token doesn't carry a `role`
+  claim at all, so there's nothing to go stale: promoting or demoting an
+  account takes effect on that account's very next request, not whenever
+  its current token happens to expire (up to `JWT_EXPIRES_IN`, 7 days by
+  default) or get reissued. The one extra query this costs is on an
+  admin-gated path, not the general request volume.
+
+Verified end-to-end against a real database in `tests/adminRole.test.ts`:
+an `ADMIN_EMAILS`-listed email is promoted through the real registration
+and login routes (not just the repository function in isolation); an
+unlisted email registers as `'user'`; a client-supplied `role: "admin"` in
+a registration body is silently stripped; and — registering a temporary
+test-only route guarded by `[app.authenticate, app.requireAdmin]` since no
+production route exists yet — an unauthenticated request gets `401`, an
+authenticated non-admin gets `403`, an authenticated admin gets `200`, and
+promoting/demoting an account via `setUserRole` takes effect on the very
+next request using the *same, already-issued* token in both directions.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

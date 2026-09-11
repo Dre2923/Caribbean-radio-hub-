@@ -11,7 +11,7 @@ import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
-import { getTokenVersion } from "./repositories/usersRepository.js";
+import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
 
 // Fastify's TypeScript types omit the numeric "trust N hops" form that its
 // underlying proxy-addr resolution actually supports at runtime, so a
@@ -30,6 +30,18 @@ class StaleTokenError extends Error {
   constructor() {
     super("Token was issued before the most recent password change");
     this.name = "StaleTokenError";
+  }
+}
+
+// Thrown (never manually reply.send()'d, for the identical race-free reason
+// as StaleTokenError/app.authenticate above) when an authenticated request
+// reaches an admin-gated route but the account's current role isn't
+// 'admin'.
+class ForbiddenError extends Error {
+  statusCode = 403;
+  constructor() {
+    super("Admin access required");
+    this.name = "ForbiddenError";
   }
 }
 
@@ -130,6 +142,22 @@ export function buildApp() {
       if (currentTokenVersion !== null && currentTokenVersion !== request.user.tv) {
         throw new StaleTokenError();
       }
+    }
+  });
+
+  // Always run *after* app.authenticate in a route's preHandler chain (it
+  // depends on request.user, which authenticate populates) - e.g.
+  // `preHandler: [app.authenticate, app.requireAdmin]`. Deliberately looks
+  // the role up fresh from the database on every call rather than trusting
+  // any cached/token-embedded value - see the comment on
+  // usersRepository.getUserRole for why: a demoted admin must lose access
+  // on their very next request, not whenever their token happens to expire.
+  // Same structural race-free pattern as app.authenticate: thrown, not
+  // reply.send()'d.
+  app.decorate("requireAdmin", async (request) => {
+    const role = await getUserRole(request.user.sub);
+    if (role !== "admin") {
+      throw new ForbiddenError();
     }
   });
 

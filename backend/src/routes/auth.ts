@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hashPassword, verifyPassword, DUMMY_PASSWORD_HASH } from "../utils/password.js";
-import { findUserByEmail, updatePasswordHash } from "../repositories/usersRepository.js";
+import {
+  findUserByEmail,
+  updatePasswordHash,
+  ensureBootstrapAdminRole,
+} from "../repositories/usersRepository.js";
 import {
   createPasswordResetToken,
   findValidPasswordResetToken,
@@ -47,6 +51,13 @@ async function login(
     return unauthorized(reply);
   }
 
+  // Config-driven admin bootstrap (see env.ts parseAdminEmails): checked on
+  // every login, not just once at registration, so adding an email to
+  // ADMIN_EMAILS after the account already exists still takes effect the
+  // next time that person logs in, without needing a re-registration or a
+  // manual DB edit.
+  const role = await ensureBootstrapAdminRole(user.id, user.email, env.adminEmails);
+
   const token = await app.jwt.sign({ sub: user.id, email: user.email, tv: user.tokenVersion });
   return reply.send({
     token,
@@ -56,6 +67,7 @@ async function login(
       displayName: user.displayName,
       countryId: user.countryId,
       createdAt: user.createdAt,
+      role,
     },
   });
 }

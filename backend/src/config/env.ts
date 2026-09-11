@@ -90,6 +90,27 @@ function frontendUrl(): string {
   return required("FRONTEND_URL", fallback).replace(/\/+$/, "");
 }
 
+// A "break-glass" admin bootstrap: any account whose email appears here is
+// promoted to the 'admin' role the moment it registers or logs in (see
+// ensureBootstrapAdminRole in src/repositories/usersRepository.ts). This is
+// deliberately the only way to become an admin right now - there's no
+// admin-management endpoint yet (that's the Admin Dashboard, Steps 31-33),
+// so a purely config-driven allowlist is what makes app.requireAdmin
+// (src/app.ts) actually reachable and testable end-to-end today rather than
+// shipping a guard nothing can ever pass. Removing an email from this list
+// does NOT demote anyone automatically - that's a deliberate one-way
+// bootstrap (an operator typo here must never silently lock out the only
+// admin); real demotion is a future admin-management concern. Pure
+// function of its input, like parseTrustProxy/parseSmtpConfig, for the same
+// testability reason.
+export function parseAdminEmails(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter((email) => email.length > 0);
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: Number(process.env.PORT ?? 3000),
@@ -120,4 +141,5 @@ export const env = {
   // for pending emails to send.
   emailOutboxIntervalMs: Number(process.env.EMAIL_OUTBOX_INTERVAL_MS ?? 10_000),
   frontendUrl: frontendUrl(),
+  adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
 };

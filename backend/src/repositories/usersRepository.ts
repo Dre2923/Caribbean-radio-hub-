@@ -1,12 +1,15 @@
 import { withTransaction } from "../db/transaction.js";
 import { query } from "../db/pool.js";
 
+export type UserRole = "user" | "admin";
+
 export interface User {
   id: number;
   email: string;
   displayName: string;
   countryId: number | null;
   createdAt: string;
+  role: UserRole;
 }
 
 interface UserRow {
@@ -15,6 +18,7 @@ interface UserRow {
   display_name: string;
   country_id: number | null;
   created_at: string;
+  role: UserRole;
 }
 
 export class EmailAlreadyRegisteredError extends Error {
@@ -48,6 +52,7 @@ function toUser(row: UserRow): User {
     displayName: row.display_name,
     countryId: row.country_id,
     createdAt: row.created_at,
+    role: row.role,
   };
 }
 
@@ -57,7 +62,7 @@ export async function createUser(input: NewUser): Promise<User> {
       const result = await client.query<UserRow>(
         `INSERT INTO users (email, password_hash, display_name, country_id)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, email, display_name, country_id, created_at`,
+         RETURNING id, email, display_name, country_id, created_at, role`,
         [input.email, input.passwordHash, input.displayName, input.countryId ?? null],
       );
       return toUser(result.rows[0]);
@@ -77,7 +82,7 @@ export async function findUserByEmail(
   email: string,
 ): Promise<(User & { passwordHash: string; tokenVersion: number }) | null> {
   const result = await query<UserRow & { password_hash: string; token_version: number }>(
-    "SELECT id, email, password_hash, display_name, country_id, created_at, token_version FROM users WHERE email = $1",
+    "SELECT id, email, password_hash, display_name, country_id, created_at, role, token_version FROM users WHERE email = $1",
     [email],
   );
   const row = result.rows[0];
@@ -89,7 +94,7 @@ export async function findUserByEmail(
 
 export async function findUserById(id: number): Promise<User | null> {
   const result = await query<UserRow>(
-    "SELECT id, email, display_name, country_id, created_at FROM users WHERE id = $1",
+    "SELECT id, email, display_name, country_id, created_at, role FROM users WHERE id = $1",
     [id],
   );
   const row = result.rows[0];
@@ -142,7 +147,7 @@ export async function updateUserProfile(id: number, updates: ProfileUpdate): Pro
       const result = await client.query<UserRow>(
         `UPDATE users SET ${setClauses.join(", ")}
          WHERE id = $${values.length}
-         RETURNING id, email, display_name, country_id, created_at`,
+         RETURNING id, email, display_name, country_id, created_at, role`,
         values,
       );
       return result.rows[0] ? toUser(result.rows[0]) : null;
@@ -179,6 +184,53 @@ export async function getTokenVersion(id: number): Promise<number | null> {
     [id],
   );
   return result.rows[0]?.token_version ?? null;
+}
+
+// Deliberately NOT embedded in the JWT: doing so would mean a demoted
+// admin's existing tokens keep passing app.requireAdmin until they expire
+// (up to JWT_EXPIRES_IN, 7d by default) or the account happens to trigger a
+// token_version bump some other way. Looking this up fresh on every
+// admin-gated request costs one query on a low-volume path and closes that
+// gap outright - a demotion takes effect on the very next request, not
+// eventually.
+export async function getUserRole(id: number): Promise<UserRole | null> {
+  const result = await query<{ role: UserRole }>("SELECT role FROM users WHERE id = $1", [id]);
+  return result.rows[0]?.role ?? null;
+}
+
+export async function setUserRole(id: number, role: UserRole): Promise<User | null> {
+  return withTransaction(async (client) => {
+    const result = await client.query<UserRow>(
+      `UPDATE users SET role = $1, updated_at = now() WHERE id = $2
+       RETURNING id, email, display_name, country_id, created_at, role`,
+      [role, id],
+    );
+    return result.rows[0] ? toUser(result.rows[0]) : null;
+  });
+}
+
+// The only path to 'admin' right now - see env.ts parseAdminEmails for why
+// this config-driven allowlist exists at all instead of an admin-management
+// endpoint (which doesn't exist yet; that's the Admin Dashboard, Steps
+// 31-33). Deliberately one-way: an email absent from `adminEmails` never
+// demotes an existing admin here, only ever promotes a listed one. Callers
+// (registration, login) pass `env.adminEmails` explicitly rather than this
+// module reading env itself, keeping the repository layer free of a config
+// dependency and the bootstrap set easy to control in tests.
+export async function ensureBootstrapAdminRole(
+  id: number,
+  email: string,
+  adminEmails: string[],
+): Promise<UserRole> {
+  if (!adminEmails.includes(email)) {
+    return (await getUserRole(id)) ?? "user";
+  }
+  const currentRole = await getUserRole(id);
+  if (currentRole === "admin") {
+    return "admin";
+  }
+  const updated = await setUserRole(id, "admin");
+  return updated?.role ?? "admin";
 }
 
 export async function deleteUser(id: number): Promise<boolean> {

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hashPassword } from "../utils/password.js";
 import {
   createUser,
+  ensureBootstrapAdminRole,
   EmailAlreadyRegisteredError,
   InvalidCountryError,
 } from "../repositories/usersRepository.js";
@@ -12,6 +13,7 @@ import {
   MIN_PASSWORD_LENGTH,
   passwordByteLengthError,
 } from "../utils/userValidation.js";
+import { env } from "../config/env.js";
 
 interface RegisterUserBody {
   email: string;
@@ -48,7 +50,11 @@ async function registerUser(
       displayName,
       countryId: countryId ?? null,
     });
-    return reply.status(201).send({ user });
+    // Applies the same config-driven admin bootstrap as login (see
+    // ensureBootstrapAdminRole) so an allowlisted email is admin from the
+    // very first response, not only after a subsequent login.
+    const role = await ensureBootstrapAdminRole(user.id, user.email, env.adminEmails);
+    return reply.status(201).send({ user: { ...user, role } });
   } catch (err) {
     if (err instanceof EmailAlreadyRegisteredError) {
       return reply.status(409).send({ status: "error", message: "Email already registered" });

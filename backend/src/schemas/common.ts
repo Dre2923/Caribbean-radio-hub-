@@ -20,8 +20,12 @@ export const userSchema = {
     displayName: { type: "string" },
     countryId: { type: ["integer", "null"] },
     createdAt: { type: "string", format: "date-time" },
+    // Never client-settable - see usersRepository.ts ensureBootstrapAdminRole
+    // for the only way this becomes "admin". Surfaced here so a client can
+    // conditionally show admin-only UI without a separate lookup.
+    role: { type: "string", enum: ["user", "admin"] },
   },
-  required: ["id", "email", "displayName", "countryId", "createdAt"],
+  required: ["id", "email", "displayName", "countryId", "createdAt", "role"],
 } as const;
 
 export const countrySchema = {

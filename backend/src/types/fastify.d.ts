@@ -21,5 +21,8 @@ declare module "@fastify/jwt" {
 declare module "fastify" {
   interface FastifyInstance {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    // Must run after `authenticate` in a route's preHandler chain - it
+    // reads request.user, which only `authenticate` populates.
+    requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
