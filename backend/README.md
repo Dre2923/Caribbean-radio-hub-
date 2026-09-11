@@ -175,11 +175,20 @@ never cover, since it requires the current password as proof of identity.
   JWT issued before it — the scenario this exists for (recovering from a
   suspected compromise) would be undermined if an attacker's existing
   session survived the reset.
+- **Whitespace-tolerant**: `token` is trimmed before use (`preValidation`
+  on `POST /v1/auth/password-reset/confirm`) — the raw token is always
+  lowercase hex, so whitespace can never be a legitimate part of a real
+  one, but a copy/paste path (an email client wrapping the link, a manual
+  copy of just the token) could add some. `newPassword` is deliberately
+  left untrimmed: unlike a token, a password's leading/trailing characters
+  can be part of what the user actually meant to type.
 - **Verified against a real database**: `tests/passwordReset.test.ts`
   covers the full flow (reset → old password dead, new password works,
-  pre-reset session token dead, token can't be replayed) and the
+  pre-reset session token dead, token can't be replayed), the
   supersede-on-request behavior (an earlier unused link stops working the
-  moment a new one is requested), not just input validation.
+  moment a new one is requested), and a token with incidental
+  leading/trailing whitespace still completing the reset successfully —
+  not just input validation.
 
 ### Password reset email delivery
 
@@ -331,6 +340,17 @@ column here at all.
   `removeAdditional: true` behavior already relied on for `POST /v1/users`),
   and there's no field a request body could use to set a station's id,
   timestamps, or which admin created it.
+- **`name`/`description`/`streamUrl`/`websiteUrl` are trimmed of
+  leading/trailing whitespace** on both create and update, before schema
+  validation runs — a `preValidation` hook, the same mechanism
+  `POST /v1/users`/`PATCH /v1/me` already use for `email`/`displayName`.
+  Found missing here during an audit (this route was built after those and
+  the same input-hygiene hook was never carried over) and fixed: a
+  genuinely valid `streamUrl` with copy-pasted surrounding whitespace was
+  being rejected outright by the HTTPS `pattern` check, rather than the
+  whitespace being silently stored, and an all-whitespace `name` now
+  correctly fails its `minLength: 1` check instead of creating a
+  blank-looking station.
 
 Verified end-to-end against a real database in `tests/stations.test.ts`:
 full create → read → update → deactivate (removed from public listing and

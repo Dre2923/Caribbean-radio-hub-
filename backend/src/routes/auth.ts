@@ -225,6 +225,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           timeWindow: "1 minute",
         },
       },
+      // Trims `token` before the schema's minLength check runs - the raw
+      // token is always lowercase hex (crypto.randomBytes(...).toString
+      // ("hex") in passwordResetRepository.ts), so whitespace can never be
+      // a legitimate part of it. The reset link is a URL a human receives
+      // by email; a client that reads it via location.search never picks
+      // up stray whitespace, but one that goes through any copy/paste path
+      // could. `findValidPasswordResetToken` does an exact SHA-256 match,
+      // so untrimmed whitespace wouldn't corrupt data - it would just make
+      // a genuinely valid token silently look invalid instead. newPassword
+      // is deliberately NOT trimmed here: unlike a token, a password's
+      // leading/trailing characters can be semantically real, and trimming
+      // them would silently change what the user typed.
+      preValidation: (request, reply, done) => {
+        const body = request.body as Partial<ConfirmResetBody> | undefined;
+        if (typeof body?.token === "string") {
+          body.token = body.token.trim();
+        }
+        done();
+      },
       schema: {
         description:
           "Completes a password reset with { token, newPassword }. The token " +

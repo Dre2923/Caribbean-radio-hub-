@@ -78,6 +78,30 @@ async function getStationHandler(
   return { station };
 }
 
+interface TrimmableStationFields {
+  name?: string;
+  description?: string;
+  streamUrl?: string;
+  websiteUrl?: string;
+}
+
+// Trims every free-text field a station body can carry - the same input
+// hygiene already applied to email/displayName on POST /v1/users and
+// PATCH /v1/me. Runs in preValidation (before schema checks), so a
+// copy-pasted stream URL or name with stray leading/trailing whitespace
+// still validates cleanly instead of failing minLength/pattern checks - or
+// worse, silently persisting the whitespace into the catalog - over
+// formatting a human wouldn't even notice they'd introduced.
+function trimStationBodyStrings(body: Partial<TrimmableStationFields> | undefined): void {
+  if (!body) return;
+  for (const field of ["name", "description", "streamUrl", "websiteUrl"] as const) {
+    const value = body[field];
+    if (typeof value === "string") {
+      body[field] = value.trim();
+    }
+  }
+}
+
 interface CreateStationBody {
   countryId: number;
   name: string;
@@ -249,6 +273,10 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
       // read-only; curating it is exactly the kind of action that
       // shouldn't be reachable by any authenticated user, only an admin.
       preHandler: [app.authenticate, app.requireAdmin],
+      preValidation: (request, reply, done) => {
+        trimStationBodyStrings(request.body as Partial<TrimmableStationFields> | undefined);
+        done();
+      },
       schema: {
         description:
           "Creates a radio station. Requires an admin account. Optional genreIds/" +
@@ -277,6 +305,10 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
     "/stations/:id",
     {
       preHandler: [app.authenticate, app.requireAdmin],
+      preValidation: (request, reply, done) => {
+        trimStationBodyStrings(request.body as Partial<TrimmableStationFields> | undefined);
+        done();
+      },
       schema: {
         description:
           "Updates a radio station. Requires an admin account. All fields optional; only " +

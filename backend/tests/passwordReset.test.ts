@@ -126,6 +126,41 @@ describe("password reset flow", () => {
     await app.close();
   });
 
+  it("accepts a reset token with incidental leading/trailing whitespace", async () => {
+    const app = buildApp();
+    const email = `passwordreset-trim-${Date.now()}@example.com`;
+    const password = "original-password-for-trim-test";
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/users",
+      payload: { email, password, displayName: "Password Reset Trim Test" },
+    });
+
+    const rawResetToken = await requestAndCaptureResetToken(app, email);
+
+    // Simulates a token that picked up stray whitespace on its way to this
+    // request - a copy/paste from an email client, a wrapped link, etc.
+    // The raw token is always lowercase hex, so whitespace can never be a
+    // legitimate part of a real one; trimming it should make this succeed
+    // exactly as if it had arrived clean.
+    const confirmReset = await app.inject({
+      method: "POST",
+      url: "/v1/auth/password-reset/confirm",
+      payload: { token: `  ${rawResetToken}  `, newPassword: "recovered-password-for-trim-test" },
+    });
+    expect(confirmReset.statusCode).toBe(204);
+
+    const newPasswordLogin = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: { email, password: "recovered-password-for-trim-test" },
+    });
+    expect(newPasswordLogin.statusCode).toBe(200);
+
+    await app.close();
+  });
+
   it("invalidates an earlier reset token when a new one is requested for the same account", async () => {
     const app = buildApp();
     const email = `passwordreset-relink-${Date.now()}@example.com`;

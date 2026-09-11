@@ -666,3 +666,81 @@ describe("radio station search, filtering, and pagination", () => {
     await app.close();
   });
 });
+
+describe("radio station input hygiene", () => {
+  it("trims leading/trailing whitespace from name, description, and streamUrl on create", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "trim-create");
+    const rawStreamUrl = uniqueStreamUrl("trim-create");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "  Untrimmed Station  ",
+        description: "  a padded description  ",
+        streamUrl: `  ${rawStreamUrl}  `,
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station).toMatchObject({
+      name: "Untrimmed Station",
+      description: "a padded description",
+      streamUrl: rawStreamUrl,
+    });
+
+    await app.close();
+  });
+
+  it("trims whitespace on update too", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "trim-update");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Trim Update Station", streamUrl: uniqueStreamUrl("trim-update") },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { name: "  Renamed With Padding  " },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.json().station.name).toBe("Renamed With Padding");
+
+    await app.close();
+  });
+
+  it("rejects an all-whitespace name rather than silently storing garbage", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "trim-whitespace-only");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "     ",
+        streamUrl: uniqueStreamUrl("trim-whitespace-only"),
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    // Trimmed to an empty string before the minLength: 1 check runs, so
+    // this is a clean 400, not a station silently created with a
+    // whitespace-only (effectively blank) name.
+    expect(create.statusCode).toBe(400);
+
+    await app.close();
+  });
+});
