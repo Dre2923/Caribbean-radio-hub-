@@ -1,0 +1,270 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  createStation,
+  deleteStation,
+  findStationById,
+  listStations,
+  updateStation,
+  DuplicateStreamUrlError,
+  InvalidCountryError,
+} from "../repositories/stationsRepository.js";
+import { errorResponseSchema } from "../schemas/common.js";
+import {
+  createStationBodySchema,
+  stationSchema,
+  updateStationBodySchema,
+} from "../schemas/stations.js";
+
+function badRequest(reply: FastifyReply, message: string) {
+  return reply.status(400).send({ status: "error", message });
+}
+
+function stationNotFound(reply: FastifyReply) {
+  return reply.status(404).send({ status: "error", message: "Station not found" });
+}
+
+interface ListStationsQuery {
+  countryId?: number;
+}
+
+async function listStationsHandler(
+  request: FastifyRequest<{ Querystring: ListStationsQuery }>,
+) {
+  // Always active-only: this is the public catalog listing, never a place
+  // a curated-off (Step 17) or not-yet-approved station should appear.
+  // Admin tooling that needs to see everything queries the repository
+  // directly (or gets its own route) rather than this one growing a mode
+  // switch.
+  const stations = await listStations({ countryId: request.query.countryId, activeOnly: true });
+  return { stations };
+}
+
+async function getStationHandler(
+  request: FastifyRequest<{ Params: { id: number } }>,
+  reply: FastifyReply,
+) {
+  const station = await findStationById(request.params.id);
+  if (!station || !station.isActive) {
+    // Same 404 whether the id doesn't exist at all or belongs to a
+    // curated-off station - the public API never signals "this station
+    // exists but is hidden," which would leak curation state to anyone
+    // probing ids.
+    return stationNotFound(reply);
+  }
+  return { station };
+}
+
+interface CreateStationBody {
+  countryId: number;
+  name: string;
+  streamUrl: string;
+  websiteUrl?: string;
+  description?: string;
+}
+
+async function createStationHandler(
+  request: FastifyRequest<{ Body: CreateStationBody }>,
+  reply: FastifyReply,
+) {
+  const { countryId, name, streamUrl, websiteUrl, description } = request.body;
+  try {
+    const station = await createStation({
+      countryId,
+      name,
+      streamUrl,
+      websiteUrl: websiteUrl ?? null,
+      description: description ?? null,
+      createdByUserId: request.user.sub,
+    });
+    return reply.status(201).send({ station });
+  } catch (err) {
+    if (err instanceof DuplicateStreamUrlError) {
+      return reply.status(409).send({ status: "error", message: err.message });
+    }
+    if (err instanceof InvalidCountryError) {
+      return badRequest(reply, "countryId does not match a known country");
+    }
+    throw err;
+  }
+}
+
+interface UpdateStationBody {
+  countryId?: number;
+  name?: string;
+  streamUrl?: string;
+  websiteUrl?: string;
+  description?: string;
+  isActive?: boolean;
+}
+
+async function updateStationHandler(
+  request: FastifyRequest<{ Params: { id: number }; Body: UpdateStationBody }>,
+  reply: FastifyReply,
+) {
+  try {
+    const station = await updateStation(request.params.id, request.body);
+    if (!station) {
+      return stationNotFound(reply);
+    }
+    return { station };
+  } catch (err) {
+    if (err instanceof DuplicateStreamUrlError) {
+      return reply.status(409).send({ status: "error", message: err.message });
+    }
+    if (err instanceof InvalidCountryError) {
+      return badRequest(reply, "countryId does not match a known country");
+    }
+    throw err;
+  }
+}
+
+async function deleteStationHandler(
+  request: FastifyRequest<{ Params: { id: number } }>,
+  reply: FastifyReply,
+) {
+  const deleted = await deleteStation(request.params.id);
+  if (!deleted) {
+    return stationNotFound(reply);
+  }
+  return reply.status(204).send();
+}
+
+export async function stationsRoutes(app: FastifyInstance): Promise<void> {
+  app.get<{ Querystring: ListStationsQuery }>(
+    "/stations",
+    {
+      schema: {
+        description: "Lists active radio stations, optionally filtered to one country.",
+        tags: ["stations"],
+        querystring: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            countryId: { type: "integer", minimum: 1 },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: { stations: { type: "array", items: stationSchema } },
+            required: ["stations"],
+          },
+        },
+      },
+    },
+    listStationsHandler,
+  );
+
+  app.get<{ Params: { id: number } }>(
+    "/stations/:id",
+    {
+      schema: {
+        description: "Returns a single active radio station.",
+        tags: ["stations"],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "integer", minimum: 1 } },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: { station: stationSchema },
+            required: ["station"],
+          },
+          404: errorResponseSchema,
+        },
+      },
+    },
+    getStationHandler,
+  );
+
+  app.post<{ Body: CreateStationBody }>(
+    "/stations",
+    {
+      // Admin-only (Step 11's app.requireAdmin) - the public catalog is
+      // read-only; curating it is exactly the kind of action that
+      // shouldn't be reachable by any authenticated user, only an admin.
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description: "Creates a radio station. Requires an admin account.",
+        tags: ["stations"],
+        security: [{ bearerAuth: [] }],
+        body: createStationBodySchema,
+        response: {
+          201: {
+            type: "object",
+            properties: { station: stationSchema },
+            required: ["station"],
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          409: errorResponseSchema,
+        },
+      },
+    },
+    createStationHandler,
+  );
+
+  app.patch<{ Params: { id: number }; Body: UpdateStationBody }>(
+    "/stations/:id",
+    {
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description:
+          "Updates a radio station. Requires an admin account. All fields optional; only " +
+          "the fields present are changed. Setting isActive: false pulls it from the " +
+          "public catalog without deleting its history.",
+        tags: ["stations"],
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "integer", minimum: 1 } },
+        },
+        body: updateStationBodySchema,
+        response: {
+          200: {
+            type: "object",
+            properties: { station: stationSchema },
+            required: ["station"],
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema,
+          409: errorResponseSchema,
+        },
+      },
+    },
+    updateStationHandler,
+  );
+
+  app.delete<{ Params: { id: number } }>(
+    "/stations/:id",
+    {
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description:
+          "Permanently deletes a radio station. Requires an admin account. Prefer " +
+          "PATCH { isActive: false } to pull a station from the catalog while keeping " +
+          "its history - this is for removing a genuine mistake, not routine curation.",
+        tags: ["stations"],
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "integer", minimum: 1 } },
+        },
+        response: {
+          204: { type: "null", description: "Station deleted." },
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    deleteStationHandler,
+  );
+}

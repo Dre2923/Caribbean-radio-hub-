@@ -102,6 +102,23 @@ is still calling it.
   the account after verifying the password, for the same reason as password
   changes above. `401` if the password is wrong. `204` on success.
   Rate-limited to 5/min.
+- `GET /v1/stations` — lists active radio stations. Optional `?countryId=`
+  filter. Public, no auth.
+- `GET /v1/stations/:id` — a single active station. `404` for an unknown id
+  or a curated-off (inactive) one — the same response either way, see
+  "Radio Master Catalog" below.
+- `POST /v1/stations` — requires an admin account (see "Authorization: user
+  roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, description? }`.
+  `streamUrl`/`websiteUrl` must be HTTPS. `400` on invalid input or an
+  unknown `countryId`, `409` if `streamUrl` is already registered to
+  another station.
+- `PATCH /v1/stations/:id` — requires an admin account. All fields
+  optional, including `isActive` (pulls/restores a station from the public
+  catalog without deleting it). Same `400`/`409` cases as create, `404` for
+  an unknown id.
+- `DELETE /v1/stations/:id` — requires an admin account. Permanently
+  deletes the station and its history — prefer `PATCH { isActive: false }`
+  for routine curation. `404` for an unknown id.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -246,8 +263,9 @@ an account set its own or anyone else's role.
 - **`app.requireAdmin`** (`src/app.ts`) is the guard a route adds to gate
   itself to admins: `preHandler: [app.authenticate, app.requireAdmin]`
   (in that order — it reads `request.user`, which only `authenticate`
-  populates). No route uses it yet; it's foundation for Radio Catalog
-  curation, Events moderation, and the Admin Dashboard, all still ahead.
+  populates). `POST /v1/stations`, `PATCH /v1/stations/:id`, and
+  `DELETE /v1/stations/:id` are its first real callers (see "Radio Master
+  Catalog" below); Events moderation and the Admin Dashboard will add more.
 - **The role is looked up fresh from the database on every request** —
   deliberately *not* embedded in the JWT. A token doesn't carry a `role`
   claim at all, so there's nothing to go stale: promoting or demoting an
@@ -266,6 +284,49 @@ production route exists yet — an unauthenticated request gets `401`, an
 authenticated non-admin gets `403`, an authenticated admin gets `200`, and
 promoting/demoting an account via `setUserRole` takes effect on the very
 next request using the *same, already-issued* token in both directions.
+
+## Radio Master Catalog
+
+`radio_stations` (migration `1700000007000_radio_stations`) is the core
+table behind Steps 12–18. Per the Project Standard, it only ever stores a
+station's *metadata* and its own authorized `streamUrl` — a listener's
+device connects to that URL directly; this backend never proxies, records,
+or rebroadcasts the audio itself, so there's deliberately no audio-storage
+column here at all.
+
+- **Public reads, admin-gated writes.** `GET /v1/stations` and
+  `GET /v1/stations/:id` need no auth. `POST`/`PATCH`/`DELETE` require
+  `[app.authenticate, app.requireAdmin]` (see "Authorization" above) — the
+  catalog is curated, not user-editable.
+- **HTTPS-only stream and website URLs**, enforced by JSON Schema
+  (`pattern: "^https://"`, not just `format: "uri"`, which checks general
+  URI structure but not scheme) — the same HTTPS-end-to-end standard the
+  API holds itself to, and what iOS's App Transport Security already
+  requires of a direct connection from a listener's device.
+- **`streamUrl` is unique at the database level**, not just checked in
+  application code — a duplicate registration is rejected with `409`
+  before it can ever land two rows pointing at the same stream, laying the
+  groundwork Step 16 (data quality) will build on rather than deferring
+  the guarantee entirely to that later step.
+- **Soft-disable via `isActive`, not just delete.** `PATCH { isActive: false }`
+  pulls a station from `GET /v1/stations` and turns `GET /v1/stations/:id`
+  into a `404` — identical to the 404 for an id that never existed, so the
+  public API never leaks "this exists but is hidden" — while keeping the
+  row and its history intact for curation (Step 17). `DELETE` is for
+  removing a genuine mistake, not routine curation.
+- **Admin-only fields can't be set by the client.** `additionalProperties: false`
+  strips anything outside the documented body (the same
+  `removeAdditional: true` behavior already relied on for `POST /v1/users`),
+  and there's no field a request body could use to set a station's id,
+  timestamps, or which admin created it.
+
+Verified end-to-end against a real database in `tests/stations.test.ts`:
+full create → read → update → deactivate (removed from public listing and
+detail) → delete lifecycle with a real admin account; `401`/`403` for a
+missing/non-admin token on every write; `409` for a duplicate `streamUrl`;
+`400` for an unknown `countryId`; `404` for an unknown station id on read,
+update, and delete; and a client-supplied unknown field silently stripped
+rather than rejected or persisted.
 
 ## Security baseline
 

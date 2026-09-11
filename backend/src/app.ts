@@ -9,6 +9,7 @@ import { countriesRoutes } from "./routes/countries.js";
 import { usersRoutes } from "./routes/users.js";
 import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
+import { stationsRoutes } from "./routes/stations.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
@@ -88,8 +89,9 @@ export function buildApp() {
         info: {
           title: "Caribbean Radio & Events Platform API",
           description:
-            "Foundation backend API (Steps 01-10). All business-domain routes are " +
-            "under /v1 - see README.md 'API versioning' for the policy.",
+            "Caribbean Radio & Events Platform backend (Foundation Steps 01-11, Radio " +
+            "Master Catalog Steps 12+). All business-domain routes are under /v1 - " +
+            "see README.md 'API versioning' for the policy.",
           version: "1.0.0",
         },
         components: {
@@ -183,6 +185,7 @@ export function buildApp() {
       v1.register(usersRoutes);
       v1.register(authRoutes);
       v1.register(meRoutes);
+      v1.register(stationsRoutes);
     },
     { prefix: "/v1" },
   );
