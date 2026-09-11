@@ -42,6 +42,21 @@ npm run dev                   # starts the API on :3000
   bcrypt comparison always runs, against a dummy hash when the email isn't
   found), so a login attempt can't be used to enumerate registered emails.
   Rate-limited to 5/min, the tightest limit in the API.
+- `POST /auth/password-reset/request` — body: `{ email }`. Always returns
+  the same `200` and generic message regardless of whether the email is
+  registered (no enumeration). If it is, a single-use, 1-hour-expiring
+  reset token is generated and (for now — see "Password reset email
+  delivery" below) logged rather than emailed. Rate-limited to 5/min.
+- `POST /auth/password-reset/confirm` — body: `{ token, newPassword }`.
+  Sets the new password, invalidates the reset token, and invalidates
+  every session token issued before the reset (same mechanism as
+  `POST /me/password`) — a reset triggered by a suspected compromise kills
+  any session an attacker might already hold, not just the credential.
+  `400` with a generic "Invalid or expired reset token" for any invalid,
+  expired, already-used, or unknown token — the same message regardless of
+  which, so this can't be used to probe token validity either. Requesting
+  a new reset link invalidates any earlier unused one for that account.
+  Rate-limited to 5/min.
 - `GET /me` — requires `Authorization: Bearer <token>`. Returns the current
   user's profile. `401` on a missing/invalid/expired/tampered token.
 - `PATCH /me` — requires auth. Body: `{ email?, displayName?, countryId? }`,
@@ -80,6 +95,49 @@ outside the schema deliberately:
   failure would return a different status/message than a wrong password,
   undermining the anti-enumeration behavior above. Every invalid login
   input returns the identical 401.
+
+## Password reset
+
+`POST /auth/password-reset/request` + `POST /auth/password-reset/confirm`
+give an account owner a way to recover access without knowing their
+current password — the one piece a "change password" endpoint alone can
+never cover, since it requires the current password as proof of identity.
+
+- **Tokens are high-entropy and hashed at rest**: `crypto.randomBytes(32)`
+  (256 bits), and only a SHA-256 hash of it is stored
+  (`password_reset_tokens.token_hash`) — never the raw token — so a
+  database leak alone can't be replayed into an account takeover. This is
+  deliberately a fast hash, not bcrypt: bcrypt's slowness defends against
+  guessing a *low-entropy, user-chosen* secret, which doesn't apply to a
+  256-bit random value nobody could feasibly guess or brute-force.
+- **Single-use and time-limited**: a token is marked used on a successful
+  reset (or superseded by requesting a new one) and expires after 1 hour.
+- **No enumeration**: `request` always returns the same response whether
+  or not the email is registered; `confirm` always returns the same
+  generic message for any invalid/expired/used/unknown token.
+- **Kills existing sessions**: `confirm` reuses the same `token_version`
+  bump as `POST /me/password` (see below), so a reset invalidates every
+  JWT issued before it — the scenario this exists for (recovering from a
+  suspected compromise) would be undermined if an attacker's existing
+  session survived the reset.
+- **Verified against a real database**: `tests/passwordReset.test.ts`
+  covers the full flow (reset → old password dead, new password works,
+  pre-reset session token dead, token can't be replayed) and the
+  supersede-on-request behavior (an earlier unused link stops working the
+  moment a new one is requested), not just input validation.
+
+### Password reset email delivery — not yet wired up
+
+No email provider (SES, SendGrid, Postmark, etc.) is integrated into this
+backend yet. `POST /auth/password-reset/request` currently logs the raw
+reset token via `logger.info` (clearly labeled "email delivery not yet
+wired up") instead of emailing it — enough to exercise and test the full
+flow now, but **this must be replaced with a real send before any
+production launch**: logging a reset token anywhere is a real credential
+leak into logs/log-aggregation once this is live traffic, not a
+development convenience worth keeping. That integration is a distinct
+piece of work (provider account, templates, deliverability) tracked as a
+follow-up, not silently deferred.
 
 ## Token invalidation on password change
 

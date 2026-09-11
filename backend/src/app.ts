@@ -75,7 +75,7 @@ export function buildApp() {
       openapi: {
         info: {
           title: "Caribbean Radio & Events Platform API",
-          description: "Foundation backend API (Steps 01-06).",
+          description: "Foundation backend API (Steps 01-09).",
           version: "0.1.0",
         },
         components: {

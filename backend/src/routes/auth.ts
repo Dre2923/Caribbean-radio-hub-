@@ -1,7 +1,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { verifyPassword, DUMMY_PASSWORD_HASH } from "../utils/password.js";
-import { findUserByEmail } from "../repositories/usersRepository.js";
+import { hashPassword, verifyPassword, DUMMY_PASSWORD_HASH } from "../utils/password.js";
+import { findUserByEmail, updatePasswordHash } from "../repositories/usersRepository.js";
+import {
+  createPasswordResetToken,
+  findValidPasswordResetToken,
+  markPasswordResetTokenUsed,
+} from "../repositories/passwordResetRepository.js";
 import { errorResponseSchema, userSchema } from "../schemas/common.js";
+import { MIN_PASSWORD_LENGTH, passwordByteLengthError } from "../utils/userValidation.js";
+import { logger } from "../utils/logger.js";
 
 interface LoginBody {
   email?: string;
@@ -50,6 +57,81 @@ async function login(
   });
 }
 
+const RESET_REQUESTED_MESSAGE =
+  "If that email is registered, a password reset link has been sent.";
+
+interface RequestResetBody {
+  email?: string;
+}
+
+async function requestPasswordReset(
+  request: FastifyRequest<{ Body: RequestResetBody }>,
+  reply: FastifyReply,
+) {
+  const body = request.body ?? {};
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+
+  // Identical response regardless of whether the email is registered - the
+  // same anti-enumeration reasoning as login. Timing isn't equalized as
+  // precisely as login's (that used a deliberately-slow bcrypt comparison
+  // as the equalizer; here "insert a row" vs "do nothing" is a much
+  // smaller and noisier signal over a real network) - a conscious,
+  // documented tradeoff, not an oversight, and consistent with already
+  // accepting a more direct signal elsewhere (POST /users' 409 on a
+  // taken email).
+  if (email) {
+    const user = await findUserByEmail(email);
+    if (user) {
+      const rawToken = await createPasswordResetToken(user.id);
+      // No email provider is wired up yet (SES/SendGrid/Postmark, a real
+      // send). Logging the link is a development-only stand-in so the
+      // flow is fully testable end-to-end now; production must replace
+      // this with an actual send before launch, not ship it logging
+      // reset tokens.
+      logger.info("Password reset requested (email delivery not yet wired up)", {
+        userId: user.id,
+        resetToken: rawToken,
+      });
+    }
+  }
+
+  return reply.send({ status: "ok", message: RESET_REQUESTED_MESSAGE });
+}
+
+interface ConfirmResetBody {
+  token: string;
+  newPassword: string;
+}
+
+async function confirmPasswordReset(
+  request: FastifyRequest<{ Body: ConfirmResetBody }>,
+  reply: FastifyReply,
+) {
+  const { token, newPassword } = request.body;
+
+  const passwordError = passwordByteLengthError(newPassword);
+  if (passwordError) {
+    return reply.status(400).send({ status: "error", message: passwordError });
+  }
+
+  const resetToken = await findValidPasswordResetToken(token);
+  if (!resetToken) {
+    return reply
+      .status(400)
+      .send({ status: "error", message: "Invalid or expired reset token" });
+  }
+
+  const newHash = await hashPassword(newPassword);
+  // updatePasswordHash also bumps token_version (Step 08), so every
+  // session issued before this reset - including one an attacker who
+  // triggered account takeover might already hold - stops working
+  // immediately, not just the credential itself changing.
+  await updatePasswordHash(resetToken.userId, newHash);
+  await markPasswordResetTokenUsed(resetToken.id);
+
+  return reply.status(204).send();
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: LoginBody }>(
     "/auth/login",
@@ -83,5 +165,71 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     login,
+  );
+
+  app.post<{ Body: RequestResetBody }>(
+    "/auth/password-reset/request",
+    {
+      // A mass-triggerable "send an email to this address" action is a
+      // classic spam/abuse vector independent of account security, so
+      // this is rate-limited as tightly as login/registration.
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: "1 minute",
+        },
+      },
+      schema: {
+        description:
+          "Requests a password reset link for { email }. Always returns the " +
+          "same 200 and message whether or not the email is registered, so " +
+          "this can't be used to enumerate accounts.",
+        tags: ["auth"],
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["ok"] },
+              message: { type: "string" },
+            },
+            required: ["status", "message"],
+          },
+        },
+      },
+    },
+    requestPasswordReset,
+  );
+
+  app.post<{ Body: ConfirmResetBody }>(
+    "/auth/password-reset/confirm",
+    {
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: "1 minute",
+        },
+      },
+      schema: {
+        description:
+          "Completes a password reset with { token, newPassword }. The token " +
+          "is single-use and expires after 1 hour. Also invalidates every " +
+          "session issued before the reset, not just the password itself.",
+        tags: ["auth"],
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["token", "newPassword"],
+          properties: {
+            token: { type: "string", minLength: 1 },
+            newPassword: { type: "string", minLength: MIN_PASSWORD_LENGTH },
+          },
+        },
+        response: {
+          204: { type: "null", description: "Password reset." },
+          400: errorResponseSchema,
+        },
+      },
+    },
+    confirmPasswordReset,
   );
 }
