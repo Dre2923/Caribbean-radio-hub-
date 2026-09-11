@@ -1,0 +1,68 @@
+# Caribbean Radio & Events Platform — Build Manifest
+
+Production master build for Android, iPhone/iPad, and Windows (macOS deferred).
+
+## Control Rule
+
+Build one numbered step at a time. Test it. Stop and wait for explicit
+confirmation ("continue") before starting the next step. Never chain
+multiple steps together without an explicit go-ahead each time.
+
+## Project Standard
+
+- Premium, production-grade Caribbean radio, events, voice-control,
+  advertising, discovery, and community platform.
+- Public listener experience is free initially.
+- The application MUST NOT rebroadcast, restream, record, cache for
+  redistribution, or host a radio station's copyrighted broadcast unless
+  proper additional rights are obtained. Architecture: the user's device
+  connects directly to the radio station's authorized stream URL; the
+  application never proxies or stores audio.
+- Every component: modular, backed up before modification, documented,
+  testable, monitored, secure, accessible, responsive, production-ready,
+  cross-platform where applicable, free/open-source first.
+- Every database write requires error handling and rollback protection
+  built in from the start.
+
+## Launch Countries (13, database-driven so more can be added later)
+
+Jamaica, Trinidad & Tobago, Dominica, Saint Lucia, Grenada,
+Antigua & Barbuda, Barbados, Puerto Rico, Saint Vincent & the Grenadines,
+Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
+
+## Front-End Design Direction (Step 40 and all UI work)
+
+- Fortune-500 / top-tier commercial standard.
+- Strong, animated interactive buttons and dropdown menus with real
+  hover/pressed/loading/focus/disabled/error states.
+- Caribbean color palette: warm sunset tones, ocean blues/teals, vibrant
+  green accents. Authentic ocean-themed imagery/motion without hurting
+  readability.
+- Voice command must be fast/responsive, minimal lag.
+- WCAG-verified accessibility (font sizes, alignment).
+- Avoid: cheap carnival-flyer look, overloaded tourism-site look, generic
+  templates, dark unreadable UI, random bright colors everywhere.
+
+## Step Sequence (64 steps)
+
+- 01–11: Foundation / Backend
+- 12–18: Caribbean Radio Master Catalog (13-country list applies)
+- 19–23: Stream Reliability
+- 24–30: Events Database
+- 31–33: Admin Dashboard
+- 34–38: Voice System
+- 39–45: Flutter Client & Premium Design (revised design direction applies)
+- 46–50: Platform Audio
+- 51–55: User Features
+- 56–57: Advertising
+- 58–60: Reliability / Security / Monitoring
+- 61: Competitor Failure Test Suite
+- 62: Background Update Workers
+- 63: Production QA
+- 64: Production Release Gate
+
+## Progress Log
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 01   | Foundation & Backend Bootstrap (Node.js + TypeScript + PostgreSQL, health check, error/rollback-safe DB access, migrations, tests) | Built — awaiting confirmation to continue |

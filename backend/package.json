@@ -1,0 +1,36 @@
+{
+  "name": "caribbean-radio-hub-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Foundation backend service for the Caribbean Radio & Events Platform",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "migrate": "node-pg-migrate",
+    "migrate:up": "node-pg-migrate up",
+    "migrate:down": "node-pg-migrate down",
+    "test": "vitest run",
+    "lint": "eslint src tests --ext .ts"
+  },
+  "dependencies": {
+    "fastify": "^5.12.3",
+    "pg": "^8.23.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/pg": "^8.23.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.1",
+    "@typescript-eslint/parser": "^8.18.1",
+    "eslint": "^8.57.1",
+    "node-pg-migrate": "^9.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  }
+}
