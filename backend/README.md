@@ -25,6 +25,10 @@ npm run dev                   # starts the API on :3000
 
 - `GET /health` — liveness check, no external dependencies.
 - `GET /health/db` — readiness check, verifies the database connection.
+- `GET /countries` — lists the active launch countries (database-driven).
+- `POST /users` — registers a user account. Body: `{ email, password, displayName, countryId? }`.
+  Passwords are hashed with bcrypt before storage and are never returned in
+  responses. Returns `400` on invalid input, `409` on a duplicate email.
 
 ## Database access patterns
 

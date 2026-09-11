@@ -65,4 +65,5 @@ Saint Kitts & Nevis, Anguilla, Turks and Caicos, Bahamas.
 
 | Step | Description | Status |
 |------|-------------|--------|
-| 01   | Foundation & Backend Bootstrap (Node.js + TypeScript + PostgreSQL, health check, error/rollback-safe DB access, migrations, tests) | Built — awaiting confirmation to continue |
+| 01   | Foundation & Backend Bootstrap (Node.js + TypeScript + PostgreSQL, health check, error/rollback-safe DB access, migrations, tests) | Built and confirmed |
+| 02   | Core Domain Schema — Countries (13 launch countries, seeded, database-driven) & Users (bcrypt-hashed passwords, unique email), `GET /countries`, `POST /users` | Built — awaiting confirmation to continue |
