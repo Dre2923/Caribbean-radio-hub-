@@ -44,6 +44,20 @@ npm run dev                   # starts the API on :3000
   Rate-limited to 5/min, the tightest limit in the API.
 - `GET /me` — requires `Authorization: Bearer <token>`. Returns the current
   user's profile. `401` on a missing/invalid/expired/tampered token.
+- `PATCH /me` — requires auth. Body: `{ email?, displayName?, countryId? }`,
+  at least one field. Updates only the fields present. `409` on an email
+  already taken by another account, `400` on invalid input or an unknown
+  countryId. Password changes are deliberately not part of this endpoint —
+  see `POST /me/password` below.
+- `POST /me/password` — requires auth. Body: `{ currentPassword, newPassword }`.
+  Changing a password requires proving the current one first, so a
+  stolen/shared-device token alone can't lock the real owner out. `401` if
+  `currentPassword` is wrong, `400` if `newPassword` is outside 8–72 bytes.
+  `204` on success. Rate-limited to 5/min.
+- `DELETE /me` — requires auth. Body: `{ password }`. Permanently deletes
+  the account after verifying the password, for the same reason as password
+  changes above. `401` if the password is wrong. `204` on success.
+  Rate-limited to 5/min.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`

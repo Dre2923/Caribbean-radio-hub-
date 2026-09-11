@@ -6,16 +6,12 @@ import {
   InvalidCountryError,
 } from "../repositories/usersRepository.js";
 import { errorResponseSchema, userSchema } from "../schemas/common.js";
-
-const MAX_EMAIL_LENGTH = 254; // RFC 5321
-const MIN_PASSWORD_LENGTH = 8;
-// bcrypt silently ignores any bytes beyond 72 - without a cap, two different
-// passwords sharing that prefix would hash identically. JSON Schema's
-// minLength/maxLength count UTF-16 code units, not UTF-8 bytes, so this
-// can't be expressed declaratively - it's enforced in the handler below
-// instead of the route schema.
-const MAX_PASSWORD_LENGTH = 72;
-const MAX_DISPLAY_NAME_LENGTH = 120; // matches the users.display_name column
+import {
+  MAX_EMAIL_LENGTH,
+  MAX_DISPLAY_NAME_LENGTH,
+  MIN_PASSWORD_LENGTH,
+  passwordByteLengthError,
+} from "../utils/userValidation.js";
 
 interface RegisterUserBody {
   email: string;
@@ -38,8 +34,9 @@ async function registerUser(
   // checks that can't be expressed as JSON Schema remain here.
   const { email, password, displayName, countryId } = request.body;
 
-  if (Buffer.byteLength(password, "utf8") > MAX_PASSWORD_LENGTH) {
-    return badRequest(reply, `Password must be at most ${MAX_PASSWORD_LENGTH} bytes`);
+  const passwordError = passwordByteLengthError(password);
+  if (passwordError) {
+    return badRequest(reply, passwordError);
   }
 
   const passwordHash = await hashPassword(password);

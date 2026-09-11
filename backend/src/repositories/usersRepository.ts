@@ -96,6 +96,84 @@ export async function findUserById(id: number): Promise<User | null> {
   return row ? toUser(row) : null;
 }
 
+export async function findPasswordHashById(id: number): Promise<string | null> {
+  const result = await query<{ password_hash: string }>(
+    "SELECT password_hash FROM users WHERE id = $1",
+    [id],
+  );
+  return result.rows[0]?.password_hash ?? null;
+}
+
+export interface ProfileUpdate {
+  email?: string;
+  displayName?: string;
+  countryId?: number | null;
+}
+
+export async function updateUserProfile(id: number, updates: ProfileUpdate): Promise<User | null> {
+  // Built from only the fields actually present, so a partial update never
+  // overwrites a column the caller didn't intend to touch (email absent
+  // from `updates` must leave the existing email alone, not null it out).
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.email !== undefined) {
+    values.push(updates.email);
+    setClauses.push(`email = $${values.length}`);
+  }
+  if (updates.displayName !== undefined) {
+    values.push(updates.displayName);
+    setClauses.push(`display_name = $${values.length}`);
+  }
+  if (updates.countryId !== undefined) {
+    values.push(updates.countryId);
+    setClauses.push(`country_id = $${values.length}`);
+  }
+
+  if (setClauses.length === 0) {
+    return findUserById(id);
+  }
+
+  setClauses.push("updated_at = now()");
+  values.push(id);
+
+  try {
+    return await withTransaction(async (client) => {
+      const result = await client.query<UserRow>(
+        `UPDATE users SET ${setClauses.join(", ")}
+         WHERE id = $${values.length}
+         RETURNING id, email, display_name, country_id, created_at`,
+        values,
+      );
+      return result.rows[0] ? toUser(result.rows[0]) : null;
+    });
+  } catch (err) {
+    if (hasPgErrorCode(err, UNIQUE_VIOLATION) && updates.email !== undefined) {
+      throw new EmailAlreadyRegisteredError(updates.email);
+    }
+    if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION) && updates.countryId != null) {
+      throw new InvalidCountryError(updates.countryId);
+    }
+    throw err;
+  }
+}
+
+export async function updatePasswordHash(id: number, passwordHash: string): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query("UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2", [
+      passwordHash,
+      id,
+    ]);
+  });
+}
+
+export async function deleteUser(id: number): Promise<boolean> {
+  return withTransaction(async (client) => {
+    const result = await client.query("DELETE FROM users WHERE id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  });
+}
+
 function hasPgErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
