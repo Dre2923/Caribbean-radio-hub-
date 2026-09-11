@@ -11,6 +11,7 @@ import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
+import { getTokenVersion } from "./repositories/usersRepository.js";
 
 // Fastify's TypeScript types omit the numeric "trust N hops" form that its
 // underlying proxy-addr resolution actually supports at runtime, so a
@@ -19,6 +20,18 @@ import { env } from "./config/env.js";
 // TrustProxyFunction type isn't actually exported from its namespace, so
 // this mirrors its shape - (address, hop) => boolean - structurally.)
 type TrustProxyFunction = (address: string, hop: number) => boolean;
+
+// Thrown (never manually reply.send()'d - see the comment on
+// app.authenticate below for why that matters) when a token's embedded
+// token-version claim no longer matches the account's current one, i.e.
+// the password has changed since this token was issued.
+class StaleTokenError extends Error {
+  statusCode = 401;
+  constructor() {
+    super("Token was issued before the most recent password change");
+    this.name = "StaleTokenError";
+  }
+}
 
 export function resolveTrustProxy(
   value: boolean | number | string,
@@ -99,6 +112,23 @@ export function buildApp() {
   // passes against this one.
   app.decorate("authenticate", async (request) => {
     await request.jwtVerify();
+
+    // A valid signature only proves the token was legitimately issued at
+    // some point - it says nothing about whether the password has changed
+    // since. `tv` is undefined for a token signed without this claim (not
+    // expected in production once every login goes through the current
+    // code, but true for tokens signed directly in tests) - skip rather
+    // than reject, so this only tightens behavior for real sessions, never
+    // breaks a token this check doesn't know how to evaluate. Likewise a
+    // null currentTokenVersion (account no longer exists) is left for the
+    // route handler's own lookup to turn into its usual 404, not folded
+    // into this check as a 401.
+    if (request.user.tv !== undefined) {
+      const currentTokenVersion = await getTokenVersion(request.user.sub);
+      if (currentTokenVersion !== null && currentTokenVersion !== request.user.tv) {
+        throw new StaleTokenError();
+      }
+    }
   });
 
   app.register(healthRoutes);

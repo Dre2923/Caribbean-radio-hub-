@@ -75,16 +75,16 @@ export async function createUser(input: NewUser): Promise<User> {
 
 export async function findUserByEmail(
   email: string,
-): Promise<(User & { passwordHash: string }) | null> {
-  const result = await query<UserRow & { password_hash: string }>(
-    "SELECT id, email, password_hash, display_name, country_id, created_at FROM users WHERE email = $1",
+): Promise<(User & { passwordHash: string; tokenVersion: number }) | null> {
+  const result = await query<UserRow & { password_hash: string; token_version: number }>(
+    "SELECT id, email, password_hash, display_name, country_id, created_at, token_version FROM users WHERE email = $1",
     [email],
   );
   const row = result.rows[0];
   if (!row) {
     return null;
   }
-  return { ...toUser(row), passwordHash: row.password_hash };
+  return { ...toUser(row), passwordHash: row.password_hash, tokenVersion: row.token_version };
 }
 
 export async function findUserById(id: number): Promise<User | null> {
@@ -160,11 +160,25 @@ export async function updateUserProfile(id: number, updates: ProfileUpdate): Pro
 
 export async function updatePasswordHash(id: number, passwordHash: string): Promise<void> {
   await withTransaction(async (client) => {
-    await client.query("UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2", [
-      passwordHash,
-      id,
-    ]);
+    // token_version bumps in the same statement as the password change so
+    // the two can never go out of sync (e.g. a crash between two separate
+    // writes leaving the password changed but old tokens still trusted).
+    // See migrations/1700000003000_users_token_version.cjs for why this
+    // exists: a JWT's signature being valid says nothing about whether the
+    // password has changed since it was issued.
+    await client.query(
+      "UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = now() WHERE id = $2",
+      [passwordHash, id],
+    );
   });
+}
+
+export async function getTokenVersion(id: number): Promise<number | null> {
+  const result = await query<{ token_version: number }>(
+    "SELECT token_version FROM users WHERE id = $1",
+    [id],
+  );
+  return result.rows[0]?.token_version ?? null;
 }
 
 export async function deleteUser(id: number): Promise<boolean> {

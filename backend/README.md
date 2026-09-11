@@ -53,7 +53,10 @@ npm run dev                   # starts the API on :3000
   Changing a password requires proving the current one first, so a
   stolen/shared-device token alone can't lock the real owner out. `401` if
   `currentPassword` is wrong, `400` if `newPassword` is outside 8–72 bytes.
-  `204` on success. Rate-limited to 5/min.
+  `204` on success. Rate-limited to 5/min. Also invalidates every token
+  issued before this change (see "Token invalidation" below) — a stolen
+  token stops working the moment the real owner changes their password,
+  not up to 7 days later when it happens to expire.
 - `DELETE /me` — requires auth. Body: `{ password }`. Permanently deletes
   the account after verifying the password, for the same reason as password
   changes above. `401` if the password is wrong. `204` on success.
@@ -77,6 +80,34 @@ outside the schema deliberately:
   failure would return a different status/message than a wrong password,
   undermining the anti-enumeration behavior above. Every invalid login
   input returns the identical 401.
+
+## Token invalidation on password change
+
+JWTs are stateless: a valid signature only proves a token was legitimately
+issued at some point, not that nothing has changed since. Without more,
+changing a password wouldn't actually revoke a token an attacker had
+already stolen — it would stay valid until its natural 7-day expiry
+regardless, defeating the point of the password change as a security
+response.
+
+`users.token_version` (migration `1700000003000_users_token_version`)
+closes that gap. Login embeds the account's current `token_version` in the
+JWT as `tv`. `POST /me/password` atomically bumps `token_version` in the
+same statement as the password update (so the two can never drift out of
+sync from a partial failure). `app.authenticate` compares a token's `tv`
+against the account's current value on every request and rejects a
+mismatch with `401` — so every token issued before a password change stops
+working immediately, not "eventually." A token signed without a `tv` claim
+(none in current production use, but true of hand-signed tokens in tests)
+skips the check rather than failing closed, and a `token_version` lookup
+for an account that no longer exists is left to the route's own lookup to
+produce its usual `404`, not folded into this check as a `401`.
+
+Verified end-to-end against a real database in
+`tests/tokenVersion.test.ts`: a token used to change the password is
+rejected immediately afterward, a fresh login's token keeps working, and a
+deleted account's token still gets a clean `404` rather than getting
+confused with a version mismatch.
 
 ## Security baseline
 
@@ -171,8 +202,20 @@ handlers so an unexpected error can't silently crash or hang the process.
 npm test
 ```
 
-Tests use Fastify's `inject()` so the HTTP-layer tests do not require a
-running server or database.
+Tests use Fastify's `inject()` so most HTTP-layer tests do not require a
+running server or database — validation-only cases fail before ever
+reaching the DB. `tests/tokenVersion.test.ts` is the exception: it
+exercises the real token-invalidation-on-password-change flow end-to-end
+against a real database, since that's exactly the kind of bug that a
+mocked/validation-only test can't catch. It needs a migrated
+`caribbean_radio_hub_test` database locally (CI already gets an
+equivalent via its own migrated service container, so nothing extra is
+needed there):
+
+```bash
+createdb -U caribbean -h localhost caribbean_radio_hub_test
+DATABASE_URL=postgres://caribbean:caribbean@localhost:5432/caribbean_radio_hub_test npm run migrate:up
+```
 
 ## CI
 

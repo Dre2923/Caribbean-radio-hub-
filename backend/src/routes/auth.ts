@@ -37,7 +37,7 @@ async function login(
     return unauthorized(reply);
   }
 
-  const token = await app.jwt.sign({ sub: user.id, email: user.email });
+  const token = await app.jwt.sign({ sub: user.id, email: user.email, tv: user.tokenVersion });
   return reply.send({
     token,
     user: {
