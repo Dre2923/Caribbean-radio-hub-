@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { PoolClient } from "pg";
 import { withTransaction } from "../db/transaction.js";
 import { query } from "../db/pool.js";
 
@@ -15,22 +16,26 @@ function hashToken(rawToken: string): string {
  * link a user forgot about shouldn't stay usable after they request a
  * fresh one). Returns the raw token; only the caller gets to see it
  * (destined for an email), the database only ever stores its hash.
+ *
+ * Takes the caller's transaction client rather than opening its own - the
+ * caller (src/routes/auth.ts) enqueues the reset email in the same
+ * transaction, so "token issued" and "email queued" commit or roll back
+ * together. A crash between the two, or a request that fails after this
+ * runs, can never leave a valid token with no email ever queued for it.
  */
-export async function createPasswordResetToken(userId: number): Promise<string> {
+export async function createPasswordResetToken(client: PoolClient, userId: number): Promise<string> {
   const rawToken = crypto.randomBytes(TOKEN_BYTES).toString("hex");
   const tokenHash = hashToken(rawToken);
   const expiresAt = new Date(Date.now() + TOKEN_TTL_MS);
 
-  await withTransaction(async (client) => {
-    await client.query(
-      "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
-      [userId],
-    );
-    await client.query(
-      "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
-      [userId, tokenHash, expiresAt],
-    );
-  });
+  await client.query(
+    "UPDATE password_reset_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+    [userId],
+  );
+  await client.query(
+    "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+    [userId, tokenHash, expiresAt],
+  );
 
   return rawToken;
 }

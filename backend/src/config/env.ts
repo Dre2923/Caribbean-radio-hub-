@@ -39,6 +39,57 @@ export function parseTrustProxy(raw: string | undefined): boolean | number | str
   return Number.isInteger(hopCount) && hopCount > 0 ? hopCount : raw;
 }
 
+export interface SmtpEnvConfig {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  password: string;
+  from: string;
+}
+
+// Undefined (not a set of empty-string defaults) whenever SMTP isn't
+// configured, so callers can do `if (env.smtp)` to choose the real
+// provider vs. the dev-safe console one - see src/email/provider.ts.
+// SMTP_USER/PASSWORD are optional since some relays (an internal
+// corporate SMTP server, a provider used from a trusted network) don't
+// require auth; SMTP_HOST/EMAIL_FROM being set is what signals "a real
+// provider is configured" at all. Takes a plain source object (defaulting
+// to process.env) rather than reading it directly, the same reason
+// parseTrustProxy takes its raw value as a parameter: a pure function of
+// its input is trivially unit-testable without mutating global state.
+export function parseSmtpConfig(
+  source: Record<string, string | undefined> = process.env,
+): SmtpEnvConfig | undefined {
+  const host = source.SMTP_HOST;
+  if (!host) {
+    return undefined;
+  }
+  const from = source.EMAIL_FROM;
+  if (!from) {
+    throw new Error(
+      "Missing required environment variable: EMAIL_FROM (required whenever SMTP_HOST is set)",
+    );
+  }
+  return {
+    host,
+    port: Number(source.SMTP_PORT ?? 587),
+    secure: (source.SMTP_SECURE ?? "false").toLowerCase() === "true",
+    user: source.SMTP_USER ?? "",
+    password: source.SMTP_PASSWORD ?? "",
+    from,
+  };
+}
+
+// Used to build the actual link inside the password-reset email. Required
+// in production (no silent guess about where the frontend lives); defaults
+// to a typical local dev server address otherwise so the flow works
+// out-of-the-box without extra setup.
+function frontendUrl(): string {
+  const fallback = process.env.NODE_ENV === "production" ? undefined : "http://localhost:5173";
+  return required("FRONTEND_URL", fallback).replace(/\/+$/, "");
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: Number(process.env.PORT ?? 3000),
@@ -64,4 +115,9 @@ export const env = {
   // contract yet, so the full route/schema map isn't exposed unless
   // explicitly opted into. Always on outside production for local/CI use.
   enableApiDocs: process.env.NODE_ENV !== "production" || process.env.ENABLE_API_DOCS === "true",
+  smtp: parseSmtpConfig(),
+  // How often the email outbox worker (src/email/outboxWorker.ts) polls
+  // for pending emails to send.
+  emailOutboxIntervalMs: Number(process.env.EMAIL_OUTBOX_INTERVAL_MS ?? 10_000),
+  frontendUrl: frontendUrl(),
 };

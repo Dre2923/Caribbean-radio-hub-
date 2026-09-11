@@ -126,18 +126,48 @@ never cover, since it requires the current password as proof of identity.
   supersede-on-request behavior (an earlier unused link stops working the
   moment a new one is requested), not just input validation.
 
-### Password reset email delivery — not yet wired up
+### Password reset email delivery
 
-No email provider (SES, SendGrid, Postmark, etc.) is integrated into this
-backend yet. `POST /auth/password-reset/request` currently logs the raw
-reset token via `logger.info` (clearly labeled "email delivery not yet
-wired up") instead of emailing it — enough to exercise and test the full
-flow now, but **this must be replaced with a real send before any
-production launch**: logging a reset token anywhere is a real credential
-leak into logs/log-aggregation once this is live traffic, not a
-development convenience worth keeping. That integration is a distinct
-piece of work (provider account, templates, deliverability) tracked as a
-follow-up, not silently deferred.
+`POST /auth/password-reset/request` sends a real password-reset email
+through a transactional outbox — the same pattern used by high-volume
+production systems, not a development stand-in:
+
+- **Provider-agnostic via SMTP** (`src/email/providers/smtpEmailProvider.ts`,
+  built on `nodemailer`). Any SMTP-speaking provider works —
+  AWS SES, Postmark, SendGrid, Mailgun, Resend, or a corporate relay —
+  by setting `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`EMAIL_FROM`
+  (see `.env.example`). Switching providers later is a config change, not
+  new code or a new dependency.
+- **Transactional outbox** (`src/repositories/emailOutboxRepository.ts`,
+  migration `1700000005000_email_outbox`). Issuing the reset token and
+  enqueueing its email happen inside **one database transaction**
+  (`src/routes/auth.ts`), so the two can never go out of sync — a crash
+  or error between the two can never leave a valid, usable token with no
+  email ever queued for it.
+- **Decoupled, self-healing delivery worker**
+  (`src/email/outboxWorker.ts`). A background worker polls the outbox
+  (`EMAIL_OUTBOX_INTERVAL_MS`, default 10s) and sends each row
+  independently — a slow or down email provider can never make the
+  `/auth/password-reset/request` request itself hang or fail. A failed
+  send goes back to `pending` for the next poll to retry, up to 5
+  attempts, then lands in `failed` (a dead letter — inspectable, never
+  silently dropped).
+- **Safe concurrent claiming.** The worker claims a batch via
+  `FOR UPDATE SKIP LOCKED` inside a CTE, so running more than one worker
+  instance (horizontal scaling) can never double-send the same email —
+  correct from day one, not a "someday" concern.
+- **Dev-safe default.** With no `SMTP_HOST` configured, `createEmailProvider()`
+  (`src/email/provider.ts`) falls back to `ConsoleEmailProvider`, which logs
+  the email instead of sending it, and logs a loud warning every time it's
+  selected — so a missing production SMTP config is impossible to miss
+  silently, but local development and CI need zero email setup.
+
+**Before a production launch**, an operator must provision a real SMTP
+account (a provider, a sending domain with SPF/DKIM/DMARC configured for
+deliverability) and set the `SMTP_*`/`EMAIL_FROM` env vars — that account
+and domain reputation is outside what code can set up. Until then the app
+runs correctly end-to-end using the console provider, exactly as verified
+in `tests/emailOutbox.test.ts` and `tests/passwordReset.test.ts`.
 
 ## Token invalidation on password change
 

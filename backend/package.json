@@ -26,6 +26,7 @@
     "bcrypt": "^6.0.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.12.3",
+    "nodemailer": "^10.0.7",
     "pg": "^8.23.0",
     "pino": "^10.3.1"
   },
@@ -33,6 +34,7 @@
     "@eslint/js": "^10.0.1",
     "@types/bcrypt": "^6.0.0",
     "@types/node": "^22.20.2",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "eslint": "^10.10.0",
     "globals": "^17.12.0",

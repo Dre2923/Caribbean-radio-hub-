@@ -6,9 +6,12 @@ import {
   findValidPasswordResetToken,
   markPasswordResetTokenUsed,
 } from "../repositories/passwordResetRepository.js";
+import { enqueueEmail } from "../repositories/emailOutboxRepository.js";
+import { buildPasswordResetEmail } from "../email/templates/passwordReset.js";
+import { withTransaction } from "../db/transaction.js";
 import { errorResponseSchema, userSchema } from "../schemas/common.js";
 import { MIN_PASSWORD_LENGTH, passwordByteLengthError } from "../utils/userValidation.js";
-import { logger } from "../utils/logger.js";
+import { env } from "../config/env.js";
 
 interface LoginBody {
   email?: string;
@@ -82,15 +85,16 @@ async function requestPasswordReset(
   if (email) {
     const user = await findUserByEmail(email);
     if (user) {
-      const rawToken = await createPasswordResetToken(user.id);
-      // No email provider is wired up yet (SES/SendGrid/Postmark, a real
-      // send). Logging the link is a development-only stand-in so the
-      // flow is fully testable end-to-end now; production must replace
-      // this with an actual send before launch, not ship it logging
-      // reset tokens.
-      logger.info("Password reset requested (email delivery not yet wired up)", {
-        userId: user.id,
-        resetToken: rawToken,
+      // Token issuance and email enqueueing commit as one atomic unit: a
+      // crash or error between the two can never leave a valid, usable
+      // token with no email ever queued for it. The worker that actually
+      // sends the email (src/email/outboxWorker.ts) runs entirely outside
+      // this transaction, so a slow or down email provider can never make
+      // this request hang or fail.
+      await withTransaction(async (client) => {
+        const rawToken = await createPasswordResetToken(client, user.id);
+        const resetUrl = `${env.frontendUrl}/reset-password?token=${rawToken}`;
+        await enqueueEmail(client, buildPasswordResetEmail(user.email, resetUrl));
       });
     }
   }

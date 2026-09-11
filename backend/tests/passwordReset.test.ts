@@ -1,32 +1,66 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
-import * as logger from "../src/utils/logger.js";
+import { processPendingEmails } from "../src/email/outboxWorker.js";
+import type { EmailMessage, EmailProvider } from "../src/email/types.js";
 
 // The reset token never appears in any HTTP response - it only ever
-// reaches the caller via the (currently: logged, eventually: emailed)
-// side channel - so these tests spy on the logger to get the raw token,
-// the same "channel" a real email would be, rather than reaching into
-// the database directly.
-function captureLoggedResetToken(): { getToken: () => string } {
-  let capturedToken = "";
-  vi.spyOn(logger.logger, "info").mockImplementation((message: string, fields?: Record<string, unknown>) => {
-    if (message.startsWith("Password reset requested") && typeof fields?.resetToken === "string") {
-      capturedToken = fields.resetToken;
-    }
+// reaches the user via the password-reset email. These tests exercise the
+// real outbox pipeline end to end (enqueue on request -> claim -> "send"),
+// standing in a capturing provider for the real SMTP send, then pull the
+// token out of the actual reset link the email contains - the same link a
+// real user would click.
+class CapturingEmailProvider implements EmailProvider {
+  public readonly sent: EmailMessage[] = [];
+  async send(message: EmailMessage): Promise<void> {
+    this.sent.push(message);
+  }
+}
+
+function extractResetToken(email: EmailMessage): string {
+  const match = email.text.match(/token=([a-f0-9]+)/);
+  if (!match) {
+    throw new Error(`No reset token found in email text: ${email.text}`);
+  }
+  return match[1];
+}
+
+async function requestAndCaptureResetToken(
+  app: ReturnType<typeof buildApp>,
+  email: string,
+): Promise<string> {
+  const requestReset = await app.inject({
+    method: "POST",
+    url: "/auth/password-reset/request",
+    payload: { email },
   });
-  return { getToken: () => capturedToken };
+  expect(requestReset.statusCode).toBe(200);
+
+  // This is a real (never-truncated-between-runs) database that other
+  // test files' outbox rows can also be sitting in at the same time, so a
+  // claimed batch isn't guaranteed to contain only this call's email -
+  // match on the recipient this test actually cares about rather than
+  // assuming the batch has exactly one message in it.
+  const provider = new CapturingEmailProvider();
+  await processPendingEmails(provider);
+  const message = provider.sent.find((m) => m.to === email);
+  if (!message) {
+    throw new Error(
+      `No outbox email captured for ${email} (captured: ${provider.sent.map((m) => m.to).join(", ") || "none"})`,
+    );
+  }
+  expect(message.subject).toBe("Reset your Caribbean Radio Hub password");
+
+  return extractResetToken(message);
 }
 
 describe("password reset flow", () => {
   afterAll(async () => {
-    vi.restoreAllMocks();
     await pool.end();
   });
 
   it("resets the password, invalidates prior sessions, and the token is single-use", async () => {
     const app = buildApp();
-    const capture = captureLoggedResetToken();
     const email = `passwordreset-${Date.now()}@example.com`;
     const originalPassword = "original-password-for-reset-test";
     const newPassword = "recovered-password-for-reset-test";
@@ -44,14 +78,7 @@ describe("password reset flow", () => {
     });
     const preResetToken = login.json().token as string;
 
-    const requestReset = await app.inject({
-      method: "POST",
-      url: "/auth/password-reset/request",
-      payload: { email },
-    });
-    expect(requestReset.statusCode).toBe(200);
-
-    const rawResetToken = capture.getToken();
+    const rawResetToken = await requestAndCaptureResetToken(app, email);
     expect(rawResetToken).toBeTruthy();
 
     const confirmReset = await app.inject({
@@ -101,7 +128,6 @@ describe("password reset flow", () => {
 
   it("invalidates an earlier reset token when a new one is requested for the same account", async () => {
     const app = buildApp();
-    const capture = captureLoggedResetToken();
     const email = `passwordreset-relink-${Date.now()}@example.com`;
     const password = "original-password-for-relink-test";
 
@@ -111,19 +137,8 @@ describe("password reset flow", () => {
       payload: { email, password, displayName: "Password Reset Relink Test" },
     });
 
-    await app.inject({
-      method: "POST",
-      url: "/auth/password-reset/request",
-      payload: { email },
-    });
-    const firstToken = capture.getToken();
-
-    await app.inject({
-      method: "POST",
-      url: "/auth/password-reset/request",
-      payload: { email },
-    });
-    const secondToken = capture.getToken();
+    const firstToken = await requestAndCaptureResetToken(app, email);
+    const secondToken = await requestAndCaptureResetToken(app, email);
 
     expect(secondToken).not.toBe(firstToken);
 
