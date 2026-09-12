@@ -39,6 +39,11 @@ export const stationSchema = {
     name: { type: "string" },
     streamUrl: { type: "string", format: "uri" },
     websiteUrl: { type: ["string", "null"] },
+    // Step 18: optional station artwork - the metadata source for the
+    // "station logos/artwork" media the Front-End Design Direction already
+    // names as something the client must handle correctly (proper
+    // codecs/formats, responsive sizing) once it exists.
+    logoUrl: { type: ["string", "null"] },
     description: { type: ["string", "null"] },
     isActive: { type: "boolean" },
     // Step 17: only ever non-null on a curated-off station - always null
@@ -58,6 +63,7 @@ export const stationSchema = {
     "name",
     "streamUrl",
     "websiteUrl",
+    "logoUrl",
     "description",
     "isActive",
     "deactivatedAt",
@@ -79,6 +85,7 @@ export const createStationBodySchema = {
     name: { type: "string", minLength: 1, maxLength: MAX_STATION_NAME_LENGTH },
     streamUrl: HTTPS_URL_SCHEMA,
     websiteUrl: HTTPS_URL_SCHEMA,
+    logoUrl: HTTPS_URL_SCHEMA,
     description: { type: "string", maxLength: MAX_DESCRIPTION_LENGTH },
     genreIds: TAG_ID_LIST_SCHEMA,
     languageIds: TAG_ID_LIST_SCHEMA,
@@ -94,6 +101,7 @@ export const updateStationBodySchema = {
     name: { type: "string", minLength: 1, maxLength: MAX_STATION_NAME_LENGTH },
     streamUrl: HTTPS_URL_SCHEMA,
     websiteUrl: HTTPS_URL_SCHEMA,
+    logoUrl: HTTPS_URL_SCHEMA,
     description: { type: "string", maxLength: MAX_DESCRIPTION_LENGTH },
     isActive: { type: "boolean" },
     // Only valid together with isActive: false in the same request -

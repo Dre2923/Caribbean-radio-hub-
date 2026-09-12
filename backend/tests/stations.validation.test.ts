@@ -58,6 +58,38 @@ describe("POST /v1/stations validation", () => {
     await app.close();
   });
 
+  it("rejects a non-HTTPS logoUrl", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId: 1,
+        name: "Test Station",
+        streamUrl: "https://example.com/stream",
+        logoUrl: "http://example.com/logo.png",
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects a malformed logoUrl", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId: 1,
+        name: "Test Station",
+        streamUrl: "https://example.com/stream",
+        logoUrl: "not-a-url",
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
   it("rejects a non-integer countryId", async () => {
     const app = buildApp();
     const response = await app.inject({
@@ -120,6 +152,17 @@ describe("PATCH /v1/stations/:id validation", () => {
       method: "PATCH",
       url: "/v1/stations/1",
       payload: { isActive: "yes" },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects a non-HTTPS logoUrl", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/v1/stations/1",
+      payload: { logoUrl: "http://example.com/logo.png" },
     });
     expect(response.statusCode).toBe(400);
     await app.close();

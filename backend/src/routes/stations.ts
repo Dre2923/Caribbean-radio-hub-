@@ -120,6 +120,7 @@ interface TrimmableStationFields {
   description?: string;
   streamUrl?: string;
   websiteUrl?: string;
+  logoUrl?: string;
   deactivationReason?: string;
 }
 
@@ -137,6 +138,7 @@ function trimStationBodyStrings(body: Partial<TrimmableStationFields> | undefine
     "description",
     "streamUrl",
     "websiteUrl",
+    "logoUrl",
     "deactivationReason",
   ] as const) {
     const value = body[field];
@@ -151,6 +153,7 @@ interface CreateStationBody {
   name: string;
   streamUrl: string;
   websiteUrl?: string;
+  logoUrl?: string;
   description?: string;
   genreIds?: number[];
   languageIds?: number[];
@@ -160,7 +163,7 @@ async function createStationHandler(
   request: FastifyRequest<{ Body: CreateStationBody }>,
   reply: FastifyReply,
 ) {
-  const { countryId, name, streamUrl, websiteUrl, description, genreIds, languageIds } =
+  const { countryId, name, streamUrl, websiteUrl, logoUrl, description, genreIds, languageIds } =
     request.body;
   try {
     const station = await createStation({
@@ -168,6 +171,7 @@ async function createStationHandler(
       name,
       streamUrl,
       websiteUrl: websiteUrl ?? null,
+      logoUrl: logoUrl ?? null,
       description: description ?? null,
       genreIds,
       languageIds,
@@ -193,6 +197,7 @@ interface UpdateStationBody {
   name?: string;
   streamUrl?: string;
   websiteUrl?: string;
+  logoUrl?: string;
   description?: string;
   isActive?: boolean;
   deactivationReason?: string;
@@ -390,7 +395,8 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
       },
       schema: {
         description:
-          "Creates a radio station. Requires an admin account. Optional genreIds/" +
+          "Creates a radio station. Requires an admin account. Optional logoUrl (HTTPS, " +
+          "like streamUrl/websiteUrl) attaches station artwork. Optional genreIds/" +
           "languageIds attach it to existing genres (GET /v1/genres) and languages " +
           "(GET /v1/languages).",
         tags: ["stations"],
@@ -422,8 +428,9 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
       },
       schema: {
         description:
-          "Updates a radio station. Requires an admin account. All fields optional; only " +
-          "the fields present are changed. Setting isActive: false pulls it from the " +
+          "Updates a radio station. Requires an admin account. All fields optional " +
+          "(including logoUrl, HTTPS station artwork); only the fields present are " +
+          "changed. Setting isActive: false pulls it from the " +
           "public catalog without deleting its history, and may include an optional " +
           "deactivationReason (only valid together with isActive: false) - the acting " +
           "admin and a timestamp are recorded automatically either way. Reactivating " +

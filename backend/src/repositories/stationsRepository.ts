@@ -11,6 +11,9 @@ export interface Station {
   name: string;
   streamUrl: string;
   websiteUrl: string | null;
+  // Step 18: optional station artwork - the metadata source for the
+  // client's image handling (proper codecs/formats, responsive sizing).
+  logoUrl: string | null;
   description: string | null;
   isActive: boolean;
   // Step 17: only ever populated as a side effect of updateStation setting
@@ -33,6 +36,7 @@ interface StationRow {
   name: string;
   stream_url: string;
   website_url: string | null;
+  logo_url: string | null;
   description: string | null;
   is_active: boolean;
   deactivated_at: string | null;
@@ -107,7 +111,7 @@ const STREAM_URL_NORMALIZED_CONSTRAINT = "radio_stations_stream_url_normalized_k
 // that also use this base query (findStationById) - just an unused column.
 const STATION_SELECT = `
   SELECT
-    s.id, s.country_id, s.name, s.stream_url, s.website_url, s.description,
+    s.id, s.country_id, s.name, s.stream_url, s.website_url, s.logo_url, s.description,
     s.is_active, s.deactivated_at, s.deactivated_by_user_id, s.deactivation_reason,
     s.created_at, s.updated_at,
     COALESCE(
@@ -144,6 +148,7 @@ function toStation(row: StationRow): Station {
     name: row.name,
     streamUrl: row.stream_url,
     websiteUrl: row.website_url,
+    logoUrl: row.logo_url,
     description: row.description,
     isActive: row.is_active,
     deactivatedAt: row.deactivated_at,
@@ -200,6 +205,7 @@ export interface NewStation {
   name: string;
   streamUrl: string;
   websiteUrl?: string | null;
+  logoUrl?: string | null;
   description?: string | null;
   genreIds?: number[];
   languageIds?: number[];
@@ -212,8 +218,8 @@ export async function createStation(input: NewStation): Promise<Station> {
     newId = await withTransaction(async (client) => {
       const result = await client.query<{ id: number }>(
         `INSERT INTO radio_stations
-           (country_id, name, stream_url, stream_url_normalized, website_url, description, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (country_id, name, stream_url, stream_url_normalized, website_url, logo_url, description, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
         [
           input.countryId,
@@ -221,6 +227,7 @@ export async function createStation(input: NewStation): Promise<Station> {
           input.streamUrl,
           normalizeStreamUrl(input.streamUrl),
           input.websiteUrl ?? null,
+          input.logoUrl ?? null,
           input.description ?? null,
           input.createdByUserId ?? null,
         ],
@@ -339,6 +346,7 @@ export interface StationUpdate {
   name?: string;
   streamUrl?: string;
   websiteUrl?: string | null;
+  logoUrl?: string | null;
   description?: string | null;
   isActive?: boolean;
   // Step 17: only meaningful together with isActive: false in the same
@@ -389,6 +397,10 @@ export async function updateStation(
   if (updates.websiteUrl !== undefined) {
     values.push(updates.websiteUrl);
     setClauses.push(`website_url = $${values.length}`);
+  }
+  if (updates.logoUrl !== undefined) {
+    values.push(updates.logoUrl);
+    setClauses.push(`logo_url = $${values.length}`);
   }
   if (updates.description !== undefined) {
     values.push(updates.description);

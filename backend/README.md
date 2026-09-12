@@ -112,8 +112,8 @@ is still calling it.
   or a curated-off (inactive) one — the same response either way, see
   "Radio Master Catalog" below.
 - `POST /v1/stations` — requires an admin account (see "Authorization: user
-  roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, description?, genreIds?, languageIds? }`.
-  `streamUrl`/`websiteUrl` must be HTTPS. `400` on invalid input, an
+  roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, logoUrl?, description?, genreIds?, languageIds? }`.
+  `streamUrl`/`websiteUrl`/`logoUrl` must be HTTPS. `400` on invalid input, an
   unknown `countryId`, or a `genreIds`/`languageIds` entry that doesn't
   match a real genre/language; `409` if `streamUrl` is already registered
   to another station.
@@ -588,6 +588,39 @@ clearing all three fields; the `400` for `deactivationReason` sent without
 same whitespace-trimming guarantee as every other free-text field; and the
 audit trail visible end-to-end through `GET /v1/admin/stations`.
 
+### Station logo/artwork metadata (Step 18)
+
+The last piece of the Caribbean Radio Master Catalog bucket (Steps 12–18)
+before Stream Reliability (19–23). This document's Front-End Design
+Direction already names "station logos/artwork" as media the client has to
+handle correctly (proper codecs/formats, responsive sizing) — `logoUrl` is
+the metadata column that content actually comes from, so the catalog's
+data model is complete before any client work needs it.
+
+`logoUrl` is optional and validated/trimmed exactly like `websiteUrl` —
+HTTPS-only via the same `HTTPS_URL_SCHEMA`, the same `preValidation` trim
+hook — a deliberate consistency choice rather than a new pattern for one
+field. Unlike `streamUrl`, it carries no uniqueness constraint: more than
+one station legitimately sharing the same (e.g. default/placeholder)
+artwork is normal, not the kind of data-quality problem a duplicated
+stream endpoint is. Migration `1700000011000_radio_stations_logo_url` is a
+single, unsplit `pgm.addColumn` (nullable, no backfill needed — an
+existing row getting `NULL` correctly means "no artwork set yet") —
+checked against the deferred-DDL-vs-immediate-`pgm.db.query` hazard (hit
+for Steps 02, 13, 16) and confirmed it doesn't apply here, the same
+due diligence already applied to Step 17's audit columns.
+
+Verified: migration up/down/up on dev and test databases; the full
+151-test suite (7 new, split between real-DB behavior in
+`tests/stations.test.ts` and schema-only rejection in
+`tests/stations.validation.test.ts`) passing three consecutive runs;
+`npm audit` clean; proven to actually catch a real gap by temporarily
+reverting to the pre-Step-18 route/repository/schema code and watching the
+new tests fail before restoring the fix. Covers: `logoUrl` accepted and
+returned hydrated on create; defaults to `null` when omitted; updatable via
+`PATCH`; whitespace trimmed like every other free-text field; and schema
+rejection of a non-HTTPS or malformed `logoUrl` on both `POST` and `PATCH`.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,
@@ -741,6 +774,23 @@ needed there):
 createdb -U caribbean -h localhost caribbean_radio_hub_test
 DATABASE_URL=postgres://caribbean:caribbean@localhost:5432/caribbean_radio_hub_test npm run migrate:up
 ```
+
+**This local test database is never truncated between runs.** Repeated
+local `npm test` invocations accumulate real rows in it indefinitely (CI is
+unaffected — its Postgres service container is freshly migrated on every
+run). A test that checks "does the catalog's listing contain the station I
+just created" must therefore never do so against an *unfiltered*,
+default-paginated query — that assumption silently breaks once enough
+local runs push the relevant country/name past
+`DEFAULT_STATION_LIST_LIMIT`, exactly the bug found and fixed during Step
+18 (a Step 12-era test, still passing for a long time by accident). The
+correct pattern, already used throughout `tests/stations.test.ts`: give the
+row a name/marker unique to that test invocation and filter the listing
+query by it (`q=<marker>`), so the assertion holds regardless of how much
+unrelated historical data has piled up. Match on what a test actually
+created, not on a shared real resource's total state — the same fix
+already applied once for `email_outbox` (Step 09) and now for
+`radio_stations` (Step 18).
 
 ## CI
 

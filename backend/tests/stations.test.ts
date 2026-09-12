@@ -49,6 +49,25 @@ function uniqueStreamUrl(label: string): string {
   return `https://stream.example.com/${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Some tests reuse the exact same literal station name (e.g. "CRUD Test
+// Station") across every local run, since the real Postgres test database
+// they run against is never truncated between separate `npm test`
+// invocations - only new, uniquely-URLed rows accumulate. That's fine on
+// its own, but a test that then asserts "the country's public listing
+// contains the station I just created" without narrowing the query is
+// implicitly assuming the listing's default, paginated first page still
+// includes it - an assumption that quietly stopped holding once a single
+// literal name accumulated more rows than DEFAULT_STATION_LIST_LIMIT
+// across enough repeated runs. Giving a test's station a name unique to
+// that invocation, and filtering with `q` for it, makes the assertion
+// correct regardless of how much unrelated historical data has piled up -
+// the same "match on what this test actually created, not on the shared
+// resource's total state" fix already applied once for email_outbox in
+// Step 09's email-delivery work.
+function uniqueStationName(label: string): string {
+  return `${label} ${Date.now()}${Math.random().toString(36).slice(2)}`;
+}
+
 // One file-level afterAll, not one per describe: an afterAll nested inside
 // an earlier describe block runs - and closes the pool - before a later
 // sibling describe block's tests in the same file even start. Hit and
@@ -98,18 +117,19 @@ describe("radio stations", () => {
     const countryId = await getRealCountryId(app);
     const adminToken = await createAdminToken(app, "crud");
     const streamUrl = uniqueStreamUrl("crud");
+    const name = uniqueStationName("CRUD Test Station");
 
     const create = await app.inject({
       method: "POST",
       url: "/v1/stations",
-      payload: { countryId, name: "CRUD Test Station", streamUrl, description: "A test station" },
+      payload: { countryId, name, streamUrl, description: "A test station" },
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(create.statusCode).toBe(201);
     const created = create.json().station;
     expect(created).toMatchObject({
       countryId,
-      name: "CRUD Test Station",
+      name,
       streamUrl,
       description: "A test station",
       websiteUrl: null,
@@ -120,23 +140,32 @@ describe("radio stations", () => {
     // Publicly readable, no auth required.
     const getPublic = await app.inject({ method: "GET", url: `/v1/stations/${stationId}` });
     expect(getPublic.statusCode).toBe(200);
-    expect(getPublic.json().station.name).toBe("CRUD Test Station");
+    expect(getPublic.json().station.name).toBe(name);
 
-    // Shows up in the country's public listing.
-    const list = await app.inject({ method: "GET", url: `/v1/stations?countryId=${countryId}` });
+    // Shows up in the country's public listing. Filtered by this test's own
+    // unique name (see uniqueStationName) rather than an unfiltered,
+    // default-paginated listing - the real, persistent test database this
+    // runs against accumulates rows across every local run, so an
+    // unfiltered "first page" check would eventually stop finding a given
+    // station once enough runs pushed it past the default page size.
+    const list = await app.inject({
+      method: "GET",
+      url: `/v1/stations?countryId=${countryId}&q=${encodeURIComponent(name)}`,
+    });
     expect(list.statusCode).toBe(200);
     const listedIds = (list.json().stations as Array<{ id: number }>).map((s) => s.id);
     expect(listedIds).toContain(stationId);
 
     // Admin updates the name.
+    const renamedName = uniqueStationName("Renamed Test Station");
     const update = await app.inject({
       method: "PATCH",
       url: `/v1/stations/${stationId}`,
-      payload: { name: "Renamed Test Station" },
+      payload: { name: renamedName },
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(update.statusCode).toBe(200);
-    expect(update.json().station.name).toBe("Renamed Test Station");
+    expect(update.json().station.name).toBe(renamedName);
     // Untouched fields survive a partial update.
     expect(update.json().station.streamUrl).toBe(streamUrl);
 
@@ -155,7 +184,7 @@ describe("radio stations", () => {
 
     const listAfterDeactivate = await app.inject({
       method: "GET",
-      url: `/v1/stations?countryId=${countryId}`,
+      url: `/v1/stations?countryId=${countryId}&q=${encodeURIComponent(renamedName)}`,
     });
     const idsAfterDeactivate = (listAfterDeactivate.json().stations as Array<{ id: number }>).map(
       (s) => s.id,
@@ -1192,11 +1221,12 @@ describe("radio station curation - deactivation audit trail (Step 17)", () => {
     const countryId = await getRealCountryId(app);
     const { token: adminToken, userId: adminUserId } = await createAdminAccount(app, "audit-admin-list");
     const streamUrl = uniqueStreamUrl("audit-admin-list");
+    const name = uniqueStationName("Admin List Audit Station");
 
     const create = await app.inject({
       method: "POST",
       url: "/v1/stations",
-      payload: { countryId, name: "Admin List Audit Station", streamUrl },
+      payload: { countryId, name, streamUrl },
       headers: { authorization: `Bearer ${adminToken}` },
     });
     const stationId = create.json().station.id as number;
@@ -1208,9 +1238,14 @@ describe("radio station curation - deactivation audit trail (Step 17)", () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
 
+    // Filtered by this test's own unique name (see uniqueStationName), not
+    // just countryId+isActive - the real, persistent test database
+    // accumulates deactivated rows across every local run too, so an
+    // unfiltered default-paginated page could eventually stop including
+    // this specific one.
     const adminList = await app.inject({
       method: "GET",
-      url: `/v1/admin/stations?countryId=${countryId}&isActive=false`,
+      url: `/v1/admin/stations?countryId=${countryId}&isActive=false&q=${encodeURIComponent(name)}`,
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(adminList.statusCode).toBe(200);
@@ -1224,6 +1259,101 @@ describe("radio station curation - deactivation audit trail (Step 17)", () => {
     expect(found).toBeDefined();
     expect(found?.deactivatedByUserId).toBe(adminUserId);
     expect(found?.deactivationReason).toBe("Rights issue - pending review");
+
+    await app.close();
+  });
+});
+
+describe("radio station logo/artwork metadata (Step 18)", () => {
+  it("creates a station with a logoUrl and returns it hydrated", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "logo-create");
+    const streamUrl = uniqueStreamUrl("logo-create");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Logo Station",
+        streamUrl,
+        logoUrl: "https://cdn.example.com/logos/logo-create.png",
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station.logoUrl).toBe("https://cdn.example.com/logos/logo-create.png");
+
+    await app.close();
+  });
+
+  it("defaults logoUrl to null when omitted", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "logo-omit");
+    const streamUrl = uniqueStreamUrl("logo-omit");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "No Logo Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station.logoUrl).toBeNull();
+
+    await app.close();
+  });
+
+  it("updates a station's logoUrl via PATCH", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "logo-update");
+    const streamUrl = uniqueStreamUrl("logo-update");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Logo Update Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+    expect(create.json().station.logoUrl).toBeNull();
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { logoUrl: "https://cdn.example.com/logos/logo-update.png" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.json().station.logoUrl).toBe("https://cdn.example.com/logos/logo-update.png");
+    // Untouched fields survive a partial update.
+    expect(update.json().station.streamUrl).toBe(streamUrl);
+
+    await app.close();
+  });
+
+  it("trims a logoUrl's incidental whitespace like every other free-text field", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "logo-trim");
+    const streamUrl = uniqueStreamUrl("logo-trim");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: "Logo Trim Station",
+        streamUrl,
+        logoUrl: "  https://cdn.example.com/logos/logo-trim.png  ",
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(create.statusCode).toBe(201);
+    expect(create.json().station.logoUrl).toBe("https://cdn.example.com/logos/logo-trim.png");
 
     await app.close();
   });
