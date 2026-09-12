@@ -138,6 +138,13 @@ is still calling it.
   no auth.
 - `GET /v1/languages` — lists the languages a station can be tagged with.
   Public, no auth.
+- `POST /v1/admin/stations/:id/health-check` — requires an admin account.
+  Runs a real, live reachability check against the station's own
+  `streamUrl` right now and records the result. See "Stream Reliability"
+  below. `404` for an unknown station id.
+- `GET /v1/admin/stations/:id/health-checks` — requires an admin account.
+  The station's recorded health checks, most recent first (`limit`,
+  default 20, max 100). `404` for an unknown station id.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -620,6 +627,77 @@ new tests fail before restoring the fix. Covers: `logoUrl` accepted and
 returned hydrated on create; defaults to `null` when omitted; updatable via
 `PATCH`; whitespace trimmed like every other free-text field; and schema
 rejection of a non-HTTPS or malformed `logoUrl` on both `POST` and `PATCH`.
+
+## Stream Reliability
+
+The Caribbean Radio Master Catalog (Steps 12–18, above) stores what a
+station *is* - its metadata and its own authorized `streamUrl`. Stream
+Reliability (Steps 19–23) is about whether that URL actually works right
+now, which the catalog alone can never answer: a listener's device
+connecting to a dead stream is a different failure than a wrong URL, and
+this project's standing "automatically rank stations per country by actual
+streaming quality, with fallback to the next-best" requirement needs a
+real, measured history to rank against, not an assumption.
+
+### Health checks (Step 19)
+
+`checkStreamHealth` (`src/utils/streamHealthCheck.ts`) makes a real, live
+`GET` request directly to a station's own `streamUrl` - never a proxy,
+never a cached copy, the same no-rebroadcast rule the Project Standard
+already holds the rest of this API to. The one thing that makes this
+different from every other outbound request in this codebase: a live radio
+stream can send audio *forever*, so reading its response body to
+completion (or even letting it finish on its own) would never return. The
+response body is cancelled immediately once headers arrive, before any
+audio data is read, releasing the connection without downloading a single
+byte of the actual stream. A configurable timeout (default 8s) covers a
+stalled/hung server that accepts a connection but never responds at all.
+
+Storage: `station_health_checks` (migration `1700000012000`, one row per
+check, `FK ... ON DELETE CASCADE` to `radio_stations`, indexed on
+`(station_id, checked_at)` for the "this station's history, most recent
+first" pattern everything downstream needs) and
+`stationHealthRepository.ts` (`recordHealthCheck`, `listHealthChecks` -
+capped at 100 per call like every other list endpoint in this catalog).
+
+Exposed now, not left as backend-only plumbing until a later step:
+
+- `POST /v1/admin/stations/:id/health-check` - runs one check immediately
+  and records it. Works against an inactive/curated-off station too (an
+  admin deciding whether to reactivate one needs to check it first) -
+  `404` only for a genuinely unknown station id.
+- `GET /v1/admin/stations/:id/health-checks?limit=` - the recorded
+  history, most recent first.
+
+Both admin-only (`[app.authenticate, app.requireAdmin]`), the same gating
+as every other station-catalog write - triggering a real outbound network
+request on the caller's behalf is not something any authenticated user
+should be able to do.
+
+**Automatic, recurring checks across the whole catalog on a schedule are a
+later step in this bucket** - this step is the manual-trigger primitive
+everything else builds on, proven to work end-to-end before anything gets
+automated on top of it.
+
+Verified with real due diligence, not mocks: `tests/streamHealthCheck.test.ts`
+runs the check function against real local HTTP servers - a genuinely
+infinite-streaming one (proving the cancel-the-body approach actually
+avoids downloading forever: the whole 5-test file finishes in about half a
+second despite one server that would happily stream indefinitely), a
+`404`, a server that accepts the connection but never responds (proving
+the timeout), a real connection-refused, and a malformed URL.
+`tests/stationHealth.test.ts` exercises the real routes end-to-end against
+a real database and real network calls - `401`/`403`/`404` gating, a
+genuinely reachable local server recorded correctly, a genuinely refused
+connection recorded correctly, history ordering, and the limit cap.
+Proven to actually catch a gap, not just pass by construction: temporarily
+un-registered the new routes in `app.ts` and watched 8 of the 10 new route
+tests fail with `404` before restoring the registration. A live-server run
+confirmed the same against two genuinely different real endpoints - an
+unreachable real domain (a real DNS/connection failure, not a simulated
+one) and a real local server stood up specifically to be reached - both
+recorded correctly, with the history endpoint returning both in the right
+order.
 
 ## Security baseline
 
