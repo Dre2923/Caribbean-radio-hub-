@@ -14,7 +14,7 @@ import {
   MAX_FAVORITE_LIST_LIMIT,
 } from "../repositories/favoritesRepository.js";
 import { errorResponseSchema } from "../schemas/common.js";
-import { favoriteStationSchema, favoriteEventSchema } from "../schemas/favorites.js";
+import { favoriteStationSchema, favoriteEventSchema } from "../schemas/userFeatures.js";
 
 function stationNotFound(reply: FastifyReply) {
   return reply.status(404).send({ status: "error", message: "Station not found" });

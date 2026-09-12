@@ -28,3 +28,17 @@ export const favoriteEventSchema = {
   },
   required: ["event", "favoritedAt"],
 } as const;
+
+// Step 52: a listening-history entry. station is nullable - unlike a
+// favorite, this is a historical record that outlives the station it
+// pointed to (see migration 1700000020000_listening_history's comment on
+// why that column is ON DELETE SET NULL rather than CASCADE).
+export const listeningHistoryEntrySchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    station: { anyOf: [stationSchema, { type: "null" }] },
+    listenedAt: { type: "string", format: "date-time" },
+  },
+  required: ["id", "station", "listenedAt"],
+} as const;

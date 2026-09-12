@@ -246,6 +246,18 @@ is still calling it.
   `GET /v1/events/:id`.
 - `DELETE /v1/me/favorites/events/:eventId` — requires authentication.
   Un-favorites an event for the caller. Idempotent.
+- `POST /v1/me/listening-history` — requires authentication. Body:
+  `{ stationId }`. Records that the caller just listened to a station —
+  entirely client-reported, since the backend holds no server-side "now
+  playing" state. `400` for an unknown `stationId`. `listenedAt` is always
+  the server's own current time.
+- `GET /v1/me/listening-history` — requires authentication. Lists the
+  caller's listening history, most-recently-listened first. Same
+  pagination as favorites. Unlike favorites, a deactivated station still
+  appears (this is a historical record, not an actionable list); a
+  hard-deleted station appears with `station: null`.
+- `DELETE /v1/me/listening-history` — requires authentication. Permanently
+  clears the caller's entire listening history.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1789,6 +1801,86 @@ station reappearing on reactivation with no re-favoriting, idempotent
 un-favoriting, and a rejected event disappearing from the events list
 while its own favorite row is likewise confirmed still present — with all
 live test data deleted afterward.
+
+### Listening history (Step 52)
+
+The second step of the User Features bucket, alongside Step 51's
+favorites. The backend holds no server-side "now playing" state for any
+account — the Project Standard's own no-proxy/no-rebroadcast rule (a
+listener's device connects directly to a station's own stream) already
+established this, and the Voice System's `playback_control` intent
+documentation restates it explicitly. That means a listening-history
+record only ever exists because the client itself reports "I just started
+listening to this station" — there is no way for the backend to observe
+this on its own.
+
+- **A log, not a set — the opposite shape from favorites.** A user can
+  (and normally will) listen to the same station many times, so
+  `listening_history` (migration `1700000020000_listening_history`) is a
+  plain serial-id table, not a junction table with a composite primary
+  key — there's no natural "did this user listen to this station"
+  uniqueness the way "did this user favorite this station" has. A
+  supporting index on `(user_id, listened_at)` gives the "this user's
+  history, most recent first" query every caller needs, the identical
+  index shape `station_health_checks`' own `(station_id, checked_at)`
+  index already established for the same access pattern (Step 19).
+- **`station_id` is `ON DELETE SET NULL`, not `CASCADE` — a deliberate
+  difference from every other reference table in this build**, worth
+  spelling out why: a favorite (Step 51) is an *actionable* relationship
+  ("this is one of my stations right now"), so it's correct for it to
+  disappear along with the station it points to. A listening-history
+  entry is a *historical* record ("I listened to something at 3pm
+  yesterday") — that fact stays true even if the station is later
+  hard-deleted (rare in this catalog; most curation is the soft `isActive`
+  toggle, Step 17), so the row is preserved with a `null` station
+  reference rather than erased. The identical "`SET NULL` preserves the
+  historical row, `CASCADE` would erase real information" reasoning
+  already applied to `radio_stations.created_by_user_id`/
+  `events.createdByUserId` when the *user* side is deleted, here applied
+  to the *station* side of a different table for the same underlying
+  reason. `user_id` itself is still `CASCADE` — deleting an account
+  removes that account's own history along with everything else it owns.
+- **Shows a deactivated station, unlike the favorites list — a deliberate
+  and documented divergence, not an inconsistency.** `listFavoriteStations`
+  filters to `is_active = true` because a favorite is an actionable "go
+  listen to this" list; `listListeningHistory` applies no such filter,
+  because "you listened to this at 3pm yesterday" remains true regardless
+  of whether the station is still public today. The same station id can
+  therefore correctly appear in a user's history while being invisible in
+  their favorites, at the same moment, for two different and equally
+  correct reasons.
+- **`listenedAt` is always the database's own `now()`, never
+  client-supplied** — `POST /v1/me/listening-history` takes only
+  `stationId` in its body, the same "don't trust a client device's clock
+  for an authoritative record" posture already applied to `moderated_at`/
+  `deactivated_at` elsewhere.
+- **No retention cap or automatic pruning in this step** — a deliberate,
+  considered scope boundary, not an oversight: `DELETE
+  /v1/me/listening-history` already gives every user a genuine
+  right-to-erasure over their own history (the same posture `DELETE
+  /v1/me` already holds for the account itself), and an unbounded personal
+  log is a fundamentally different scale problem than the shared,
+  ever-growing catalog tables this build has had to guard against
+  test-pollution in — revisited if a real operational need for pruning
+  emerges, the same "additive later, never premature" standard applied
+  throughout this build.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 329-test suite (8 new in
+`tests/listeningHistory.test.ts`) passing three consecutive runs; `npm
+audit` clean; proven to actually catch a real bug by temporarily flipping
+the listing query's `ORDER BY listened_at DESC` to `ASC` and watching the
+exact test that checks most-recent-first ordering fail with the precise
+reversed list before restoring it and confirming a byte-identical diff
+against the pre-bug backup; and a live-server run against a running
+compiled server — `401` with no token, `400` recording a listen for an
+unknown station, a real listen recorded and hydrated with its station,
+repeated listens against the same station all recorded as separate
+entries, a deactivated station still correctly appearing in history (in
+contrast to Step 51's favorites list), a hard-deleted station's history
+entries preserved with `station: null`, and clearing one account's history
+leaving another account's completely untouched — with all live test data
+deleted afterward.
 
 ## Security baseline
 
