@@ -76,6 +76,7 @@ interface ListEventsQuery {
   q?: string;
   startsAfter?: string;
   startsBefore?: string;
+  includePast?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -84,13 +85,18 @@ async function listEventsHandler(
   request: FastifyRequest<{ Querystring: ListEventsQuery }>,
   reply: FastifyReply,
 ) {
-  const { countryId, categoryId, q, startsAfter, startsBefore, limit, offset } = request.query;
+  const { countryId, categoryId, q, startsAfter, startsBefore, includePast, limit, offset } =
+    request.query;
   if (!validDateRange(startsAfter, startsBefore)) {
     return badRequest(reply, "startsAfter must not be after startsBefore");
   }
   // Always approved-only, never client-controlled - the public listing must
   // never surface a pending or rejected submission. GET /v1/admin/events
   // (below) is the admin-only route with full moderation visibility.
+  // upcomingOnly defaults to true (excludes a concluded event) unless the
+  // caller explicitly opts in with includePast - see EventListFilter's
+  // own comment for why this, unlike status, is a real client-controlled
+  // choice rather than something the public route hard-codes.
   const { events, total } = await listEvents({
     countryId,
     categoryId,
@@ -98,6 +104,7 @@ async function listEventsHandler(
     startsAfter,
     startsBefore,
     status: "approved",
+    upcomingOnly: !includePast,
     limit,
     offset,
   });
@@ -118,6 +125,7 @@ interface AdminListEventsQuery {
   startsAfter?: string;
   startsBefore?: string;
   status?: EventStatus;
+  upcomingOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -126,7 +134,7 @@ async function listAdminEventsHandler(
   request: FastifyRequest<{ Querystring: AdminListEventsQuery }>,
   reply: FastifyReply,
 ) {
-  const { countryId, categoryId, q, startsAfter, startsBefore, status, limit, offset } =
+  const { countryId, categoryId, q, startsAfter, startsBefore, status, upcomingOnly, limit, offset } =
     request.query;
   if (!validDateRange(startsAfter, startsBefore)) {
     return badRequest(reply, "startsAfter must not be after startsBefore");
@@ -134,6 +142,11 @@ async function listAdminEventsHandler(
   // status is undefined unless the caller explicitly filters - showing
   // every submission regardless of moderation state is the entire point of
   // this route: it's the moderation queue itself, not just an audit view.
+  // upcomingOnly is likewise undefined (no time filtering at all) unless
+  // the caller explicitly asks to narrow to just what's still upcoming -
+  // a moderator reviewing the queue needs to see a concluded event too
+  // (e.g. one submitted and rejected after the fact), so this is never
+  // hard-coded the way the public route hard-codes status.
   const { events, total } = await listEvents({
     countryId,
     categoryId,
@@ -141,6 +154,7 @@ async function listAdminEventsHandler(
     startsAfter,
     startsBefore,
     status,
+    upcomingOnly,
     limit,
     offset,
   });
@@ -306,7 +320,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "Lists approved events. Filter with countryId and/or categoryId (see " +
           "GET /v1/event-categories), q (a case-insensitive substring match against " +
           "the event title), and/or startsAfter/startsBefore (an inclusive date-time " +
-          "range against startsAt - e.g. \"what's happening this weekend\"). Paginated " +
+          "range against startsAt - e.g. \"what's happening this weekend\"). Excludes " +
+          "an event that has already concluded by default - pass includePast=true to " +
+          "see those too. Paginated " +
           `with limit (default ${DEFAULT_EVENT_LIST_LIMIT}, max ${MAX_EVENT_LIST_LIMIT}) and offset. ` +
           "Ordered soonest-first (startsAt ascending).",
         tags: ["events"],
@@ -319,6 +335,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
             q: { type: "string", minLength: 1, maxLength: MAX_EVENT_SEARCH_LENGTH },
             startsAfter: { type: "string", format: "date-time" },
             startsBefore: { type: "string", format: "date-time" },
+            includePast: { type: "boolean", default: false },
             limit: {
               type: "integer",
               minimum: 1,
@@ -364,7 +381,10 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "Lists events with full visibility (including pending/rejected submissions) " +
           "for admin moderation. Requires an admin account. Same countryId/categoryId/q/" +
           "startsAfter/startsBefore filters as GET /v1/events, plus status to filter to " +
-          "exactly one moderation state - omit status to see the full queue.",
+          "exactly one moderation state (omit to see the full queue) and upcomingOnly " +
+          "to narrow to events that haven't concluded yet (omit to see both past and " +
+          "upcoming - unlike the public route, this never excludes a concluded event " +
+          "by default).",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         querystring: {
@@ -377,6 +397,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
             startsAfter: { type: "string", format: "date-time" },
             startsBefore: { type: "string", format: "date-time" },
             status: { type: "string", enum: ["pending", "approved", "rejected"] },
+            upcomingOnly: { type: "boolean" },
             limit: {
               type: "integer",
               minimum: 1,

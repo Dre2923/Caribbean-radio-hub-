@@ -298,6 +298,16 @@ export interface EventListFilter {
   // passes 'approved' explicitly; the admin moderation queue leaves this
   // undefined to see every status, or filters to exactly one.
   status?: EventStatus;
+  // Step 29: true excludes an event that has already concluded
+  // (COALESCE(endsAt, startsAt) < now()). Undefined means no filter at
+  // all - same tri-state convention as status/isActive elsewhere - but
+  // unlike status (a moderation-state concept the public route hard-codes
+  // and never exposes), "upcoming vs. past" is a legitimate temporal view
+  // a real client wants control over (a "past events" tab is normal for
+  // an events app), so routes/events.ts lets the public route's caller
+  // opt out of this default too, rather than hard-coding it the way
+  // isActive is hard-coded for stations.
+  upcomingOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -336,6 +346,14 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
   if (filter.startsBefore !== undefined) {
     values.push(filter.startsBefore);
     conditions.push(`e.starts_at <= $${values.length}`);
+  }
+  if (filter.upcomingOnly === true) {
+    // An event with no announced end time is judged by its start alone -
+    // the same COALESCE(ends_at, starts_at) reasoning already applied by
+    // the events_ends_at_after_starts_at CHECK constraint's own comment:
+    // an event is "over" once its end (or, lacking one, its start) has
+    // passed.
+    conditions.push("COALESCE(e.ends_at, e.starts_at) >= now()");
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

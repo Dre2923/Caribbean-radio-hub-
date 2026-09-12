@@ -158,8 +158,10 @@ is still calling it.
   `?countryId=`/`?categoryId=` filters (combined with AND), `?q=`
   (case-insensitive substring match against the title), and
   `?startsAfter=`/`?startsBefore=` (an inclusive date-time range against
-  `startsAt`). Paginated with `?limit=` (default 50, max 100) and
-  `?offset=`; ordered soonest-first by `startsAt`. See "Events" below.
+  `startsAt`). Excludes an event that has already concluded by default —
+  pass `?includePast=true` to see those too. Paginated with `?limit=`
+  (default 50, max 100) and `?offset=`; ordered soonest-first by
+  `startsAt`. See "Events" below.
 - `GET /v1/events/:id` — a single approved event. `404` for an unknown id
   or a pending/rejected one — the same response either way, the identical
   no-leaking-moderation-state reasoning as a curated-off station's `404`.
@@ -190,8 +192,11 @@ is still calling it.
 - `GET /v1/admin/events` — requires an admin account. The moderation
   queue: same `?countryId=`/`?categoryId=`/`?q=`/`?startsAfter=`/
   `?startsBefore=` filters as `GET /v1/events`, plus `?status=` to narrow
-  to exactly `pending`/`approved`/`rejected` — omit it to see every
-  submission regardless of moderation state.
+  to exactly `pending`/`approved`/`rejected` (omit to see every submission
+  regardless of moderation state) and `?upcomingOnly=true` to narrow to
+  events that haven't concluded yet (omit to see both past and upcoming —
+  unlike the public route, this never excludes a concluded event by
+  default).
 - `GET /v1/event-categories` — lists the categories an event can be tagged
   with. Public, no auth.
 
@@ -1263,6 +1268,46 @@ re-submission and a case/whitespace near-duplicate both `409`, a
 title/time freed up by rejecting the original resubmits cleanly as `201`,
 and the same title at a different time or in a different country is
 never flagged.
+
+### Excluding concluded events by default (Step 29)
+
+The sixth step of the Events Database bucket, closing a real UX gap the
+listing has had since Step 24: without any time-based filtering, an event
+that already happened would sit in `GET /v1/events` forever, cluttering a
+"what's happening" default view with stale results.
+
+Filters on `COALESCE(ends_at, starts_at) >= now()` — an event with no
+announced end time is judged by its start alone; one with both is judged
+"over" only once its actual end has passed, so a multi-day event that
+started in the past but hasn't ended yet correctly stays "upcoming."
+
+A deliberate, reasoned **departure** from the `isActive`/`status`
+precedent, not an inconsistency: those are moderation/curation-state
+concepts the public route hard-codes and never exposes at all, but
+"upcoming vs. past" is a legitimate temporal view a real client wants
+control over (a "past events" tab is normal for an events app) — so
+`GET /v1/events` defaults to excluding a concluded event but lets the
+caller opt in with `?includePast=true`, while `GET /v1/admin/events`
+exposes `?upcomingOnly=` as a genuine, undefaulted filter (a moderator
+reviewing the queue needs to see a concluded event too — e.g. one
+submitted and rejected after the fact).
+
+No migration needed: this is pure application-layer query logic, the
+same "no schema change" shape as Steps 21/26.
+
+Verified: clean build and lint (no migration to cycle this step); the
+full 246-test suite (5 new) passing three consecutive runs; `npm audit`
+clean; proven to actually catch two real bugs by temporarily (a)
+narrowing the `COALESCE` condition to `starts_at` alone and (b)
+hardcoding the public route's time filter to always show everything
+regardless of `includePast`, and watching the exact tests that check
+those behaviors fail with the precise wrong event lists (an ongoing
+multi-day event wrongly excluded; a concluded event wrongly included by
+default) before restoring both; and a live-server run with one concluded
+and one upcoming event confirming the public route's default excludes
+the concluded one, `includePast=true` includes both, the admin queue
+shows both by default, and `upcomingOnly=true` narrows it to just what's
+still ahead.
 
 ## Security baseline
 

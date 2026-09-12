@@ -1177,3 +1177,140 @@ describe("Duplicate event detection (Step 28)", () => {
     await app.close();
   });
 });
+
+function pastIso(hoursAgo: number): string {
+  return new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+}
+
+describe("Excluding concluded events by default (Step 29)", () => {
+  it("excludes a concluded event (past startsAt, no endsAt) from the default public listing", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "exclude-past");
+
+    await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Already Happened Event",
+      startsAt: pastIso(24),
+    });
+    const upcoming = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Still Upcoming Event",
+      startsAt: futureIso(24),
+    });
+
+    const response = await app.inject({ method: "GET", url: `/v1/events?countryId=${countryId}` });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([upcoming.json().event.id]);
+
+    await app.close();
+  });
+
+  it("includePast=true includes a concluded event in the public listing", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "include-past");
+
+    const past = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Included Past Event",
+      startsAt: pastIso(24),
+    });
+    const upcoming = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Included Upcoming Event",
+      startsAt: futureIso(24),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&includePast=true`,
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(new Set(ids)).toEqual(new Set([past.json().event.id, upcoming.json().event.id]));
+
+    await app.close();
+  });
+
+  it("an ongoing event (past startsAt, future endsAt) is not treated as concluded", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "ongoing-event");
+
+    const ongoing = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Ongoing Multi-Day Event",
+      startsAt: pastIso(24),
+      endsAt: futureIso(24),
+    });
+
+    const response = await app.inject({ method: "GET", url: `/v1/events?countryId=${countryId}` });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([ongoing.json().event.id]);
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/events shows both past and upcoming by default, unlike the public route", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-sees-past");
+
+    const past = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Admin Visible Past Event",
+      startsAt: pastIso(24),
+    });
+    const upcoming = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Admin Visible Upcoming Event",
+      startsAt: futureIso(24),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/events?countryId=${countryId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(new Set(ids)).toEqual(new Set([past.json().event.id, upcoming.json().event.id]));
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/events?upcomingOnly=true narrows to just what hasn't concluded", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-upcoming-only");
+
+    await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Admin Filtered Past Event",
+      startsAt: pastIso(24),
+    });
+    const upcoming = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Admin Filtered Upcoming Event",
+      startsAt: futureIso(24),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/events?countryId=${countryId}&upcomingOnly=true`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([upcoming.json().event.id]);
+
+    await app.close();
+  });
+});
