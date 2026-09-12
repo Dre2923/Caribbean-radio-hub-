@@ -399,15 +399,20 @@ export interface StationUpdate {
   languageIds?: number[];
 }
 
-// actorUserId: the admin performing this write - recorded as
+// actorUserId: who's performing this write - recorded as
 // deactivated_by_user_id only when this call is the one that flips
 // isActive to false. Required unconditionally (not just when deactivating)
 // so every call site provides it consistently, the same reasoning
-// createStation already applies to createdByUserId.
+// createStation already applies to createdByUserId. null is a deliberate,
+// valid value, not a missing one: Step 23's automated stream-reliability
+// monitor deactivates stations too, and deactivated_by_user_id being
+// nullable (since Step 17) exists exactly to record "no human did this" -
+// an admin scanning GET /v1/admin/stations?isActive=false can tell the two
+// apart by whether this is null, without any separate flag or endpoint.
 export async function updateStation(
   id: number,
   updates: StationUpdate,
-  actorUserId: number,
+  actorUserId: number | null,
 ): Promise<Station | null> {
   // Built from only the fields actually present, so a partial update never
   // overwrites a column the caller didn't intend to touch - the same

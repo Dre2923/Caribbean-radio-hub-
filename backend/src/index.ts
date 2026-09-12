@@ -4,6 +4,7 @@ import { logger } from "./utils/logger.js";
 import { createEmailProvider } from "./email/provider.js";
 import { startEmailOutboxWorker } from "./email/outboxWorker.js";
 import { startHealthCheckWorker } from "./stationHealth/healthCheckWorker.js";
+import { startAutoDeactivationWorker } from "./stationHealth/autoDeactivationWorker.js";
 
 const app = buildApp();
 
@@ -18,6 +19,12 @@ const stopEmailOutboxWorker = startEmailOutboxWorker(createEmailProvider());
 // manual POST /v1/admin/stations/:id/health-check.
 const stopHealthCheckWorker = startHealthCheckWorker();
 
+// Closes the loop on the health-check data the worker above collects -
+// curates off any station confirmed completely unreachable for a
+// sustained period, so a dead stream doesn't linger in the public catalog
+// indefinitely waiting for an admin to notice.
+const stopAutoDeactivationWorker = startAutoDeactivationWorker();
+
 // Fastify's own logger already announces the listening address(es) once
 // the server is up, so there's no need to log that again here.
 app
@@ -31,6 +38,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully`);
   stopEmailOutboxWorker();
   stopHealthCheckWorker();
+  stopAutoDeactivationWorker();
   await app.close();
   process.exit(0);
 }

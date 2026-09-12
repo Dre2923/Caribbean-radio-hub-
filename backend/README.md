@@ -871,6 +871,65 @@ untouched by any other test data, confirming the exact ranked order the
 design intends, plus confirming live that `/v1/stations/ranked` and
 `/v1/stations/:id` never shadow each other.
 
+### Automatic deactivation (Step 23)
+
+The last step of the Stream Reliability bucket, closing the loop between
+Step 21's reliability scoring and Step 17's curation audit trail. Steps
+19–22 all treat an unreliable station as something to route *around* — the
+ranking already puts it last — but none of them ever stop it from
+cluttering the public catalog indefinitely. A station confirmed completely
+dead for days now gets curated off automatically instead of waiting for an
+admin to notice.
+
+Deliberately conservative on two axes, so an automated system can never
+mistake a brief outage for a dead station:
+
+- A **48-hour window** — double Step 21's 24h "that day" default. Two full
+  days of nothing but failure, not one bad day.
+- A **minimum sample floor** (20 checks) — a handful of failures during a
+  deploy window or a DNS blip must never be enough evidence on their own.
+- Acts only on an **exact 0% uptime**, never "mostly down."
+
+`updateStation`'s `actorUserId` parameter widened from `number` to
+`number | null` — Step 17 made `deactivated_by_user_id` nullable
+specifically to support a non-human actor, and this is that actor. An
+admin scanning `GET /v1/admin/stations?isActive=false` can tell an
+automatic deactivation apart from a manual one purely by whether that
+field is null, with zero new endpoints or flags needed.
+
+`evaluateStationsForAutoDeactivation`/`runAutoDeactivationSweep`
+(`src/stationHealth/autoDeactivationWorker.ts`) mirror Step 20's
+`sweepStations`/`runHealthCheckSweep` split exactly, overlap guard
+included — and for the identical reason, recognized proactively this time
+rather than discovered via a timeout: a real full-catalog evaluation would
+be slow and non-deterministic to test directly against the shared,
+ever-growing local test database, so tests exercise the
+given-a-list function instead. Started/stopped alongside the other two
+background workers in `index.ts`. New `STATION_AUTO_DEACTIVATION_INTERVAL_MS`
+config (default 1 hour) — the 48h decision only meaningfully changes as
+check history accumulates, so re-running it every 5 minutes like the
+health-check sweep would just repeat the same query for no new
+information. No migration needed — reuses Step 17's nullable columns and
+Step 21's reliability query.
+
+Verified: clean build and lint; the full 197-test suite (9 new — a
+pure-unit block for the decision rule plus real-DB integration tests)
+passing three consecutive runs; `npm audit` clean; proven to actually
+catch a real bug by temporarily dropping the minimum-check-count guard from
+the decision rule and watching both the unit test and the integration test
+that check it fail with the exact wrong values before restoring it; and a
+live-server run with a shortened interval creating a real station, giving
+it 25 real failed health checks, and watching it go from a normal `200`
+public response to a `404` entirely on its own within seconds — with the
+admin view confirming `deactivatedByUserId: null` and a self-explanatory
+`deactivationReason` naming the exact check count and window.
+
+**The Stream Reliability bucket (Steps 19–23) is complete**: real,
+live reachability checking (19), automated on a schedule (20), aggregated
+into a comparable reliability score (21), turned into the actual
+per-country fallback-chain ranking (22), and now closing the loop by
+curating off what's confirmed dead (23).
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

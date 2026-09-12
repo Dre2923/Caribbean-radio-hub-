@@ -149,6 +149,16 @@ export const env = {
   // a "that day's" reliability signal without hammering real stations
   // unnecessarily.
   stationHealthCheckIntervalMs: Number(process.env.STATION_HEALTH_CHECK_INTERVAL_MS ?? 300_000),
+  // How often the auto-deactivation worker (src/stationHealth/
+  // autoDeactivationWorker.ts) re-evaluates the active catalog against a
+  // much longer reliability window (48h) than a single health-check tick -
+  // that decision only meaningfully changes as check history accumulates,
+  // so re-running it every 5 minutes like the health-check sweep itself
+  // would just repeat the same aggregate query for no new information.
+  // 1 hour by default.
+  stationAutoDeactivationIntervalMs: Number(
+    process.env.STATION_AUTO_DEACTIVATION_INTERVAL_MS ?? 3_600_000,
+  ),
   frontendUrl: frontendUrl(),
   adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
 };
