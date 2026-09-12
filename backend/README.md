@@ -1537,6 +1537,16 @@ result out.
   under way if today already is one of those two days, never a week
   further out — the exact edge case a naive "next Saturday" calculation
   would get wrong on a Sunday.
+- **Discoverability (Step 37)**: `"help"`, `"what can I say"`, `"what can
+  you do"`, `"commands"`, and a few other exact phrasings resolve to
+  `intent: "help"` with a static, categorized `helpTopics` list of
+  example commands — a real gap without it, since there was otherwise no
+  way for a caller to learn what the voice system can actually do short
+  of trial and error. Matched by exact normalized phrase only, the same
+  discipline as the playback-control verbs — a substring match would
+  wrongly classify an unrelated command that merely happens to contain
+  the word "help" (e.g. a station literally named "Help Radio") as a
+  help request instead of resolving what it actually named.
 
 No migration, no new schema — this is pure orchestration over
 already-existing capabilities: `GET /v1/stations`'s search (Step 14) for
@@ -1601,6 +1611,18 @@ requests in a loop and confirming exactly the first 30 return `200` and
 the last 2 return `429`, plus tailing the live server's own log output to
 confirm a real request actually produces an `intent`-carrying,
 `reqId`-correlated `"voice command resolved"` log line.
+
+Verified (Step 37): clean build and lint; the full 299-test suite (2 new)
+passing three consecutive runs; `npm audit` clean; proven to actually
+catch a real bug by temporarily changing the help-phrase check from an
+exact `Set.has()` match to a substring match and watching "play help me
+radio" wrongly resolve as `intent: "help"` instead of correctly
+attempting to resolve "help me radio" as a station/genre name, restoring
+immediately and confirming a byte-identical diff against the pre-bug
+backup; and a live-server run confirming `"help"` and `"what can I say"`
+both return the same categorized topic list, `"play help me radio"`
+correctly falls through to `not_found` rather than being misclassified,
+and `"pause"` still resolves normally alongside the new intent.
 
 ## Security baseline
 

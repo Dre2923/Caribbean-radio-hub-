@@ -14,12 +14,22 @@ export const VOICE_INTENTS = [
   "play_ranked",
   "playback_control",
   "search_events",
+  "help",
   "ambiguous",
   "not_found",
   "unrecognized",
 ] as const;
 
 export const PLAYBACK_ACTIONS = ["pause", "resume", "stop", "next", "previous"] as const;
+
+const voiceHelpTopicSchema = {
+  type: "object",
+  properties: {
+    category: { type: "string" },
+    examples: { type: "array", items: { type: "string" } },
+  },
+  required: ["category", "examples"],
+} as const;
 
 export const voiceCommandBodySchema = {
   type: "object",
@@ -48,6 +58,7 @@ export const voiceCommandResponseSchema = {
     dateRangeStart: { type: ["string", "null"], format: "date-time" },
     dateRangeEnd: { type: ["string", "null"], format: "date-time" },
     action: { type: ["string", "null"], enum: [...PLAYBACK_ACTIONS, null] },
+    helpTopics: { type: ["array", "null"], items: voiceHelpTopicSchema },
     message: { type: ["string", "null"] },
   },
   required: [
@@ -62,6 +73,7 @@ export const voiceCommandResponseSchema = {
     "dateRangeStart",
     "dateRangeEnd",
     "action",
+    "helpTopics",
     "message",
   ],
 } as const;

@@ -440,6 +440,49 @@ describe("POST /v1/voice/command", () => {
     await app.close();
   });
 
+  it("resolves every accepted help phrase to a categorized topic list (Step 37)", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "help");
+
+    const phrases = ["help", "Help!", "what can I say", "what can you do", "commands", "show me commands"];
+    for (const phrase of phrases) {
+      const response = await sendCommand(app, token, phrase);
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.intent).toBe("help");
+      const topics = body.helpTopics as Array<{ category: string; examples: string[] }>;
+      expect(topics.length).toBeGreaterThan(0);
+      for (const topic of topics) {
+        expect(typeof topic.category).toBe("string");
+        expect(topic.examples.length).toBeGreaterThan(0);
+      }
+      // Every other field this intent doesn't use stays null - the same
+      // "one intent, its own fields populated, everything else null"
+      // contract as every other intent.
+      expect(body.station).toBeNull();
+      expect(body.events).toBeNull();
+      expect(body.action).toBeNull();
+    }
+
+    await app.close();
+  });
+
+  it("a phrase that merely contains a help word isn't misclassified as help", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "help-collision");
+
+    // "help" only matches as the *entire* normalized command, the same
+    // exact-phrase-match discipline as PLAYBACK_CONTROL_PHRASES - a
+    // substring match here would make an unrelated command ("play help me
+    // radio") wrongly resolve as a request for help instead of whatever
+    // it actually named.
+    const response = await sendCommand(app, token, "play help me radio");
+    expect(response.statusCode).toBe(200);
+    expect(response.json().intent).not.toBe("help");
+
+    await app.close();
+  });
+
   it("returns unrecognized for a phrase outside the command grammar", async () => {
     const app = buildApp();
     const { token } = await createRegularAccount(app, "unrecognized");

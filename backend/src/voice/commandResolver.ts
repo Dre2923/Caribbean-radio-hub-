@@ -33,11 +33,17 @@ export type VoiceIntent =
   | "play_ranked"
   | "playback_control"
   | "search_events"
+  | "help"
   | "ambiguous"
   | "not_found"
   | "unrecognized";
 
 export type PlaybackAction = "pause" | "resume" | "stop" | "next" | "previous";
+
+export interface VoiceHelpTopic {
+  category: string;
+  examples: string[];
+}
 
 export interface VoiceCommandResult {
   intent: VoiceIntent;
@@ -56,6 +62,11 @@ export interface VoiceCommandResult {
   dateRangeStart: string | null;
   dateRangeEnd: string | null;
   action: PlaybackAction | null;
+  // Only non-null for a "help" result - a static, categorized list of
+  // example phrases (see HELP_TOPICS) rather than an open-ended prose
+  // explanation, so a client can render it as a real "Try saying..."
+  // list without needing to parse free text out of `message`.
+  helpTopics: VoiceHelpTopic[] | null;
   message: string | null;
 }
 
@@ -82,6 +93,7 @@ function emptyResult(intent: VoiceIntent, overrides: Partial<VoiceCommandResult>
     dateRangeStart: null,
     dateRangeEnd: null,
     action: null,
+    helpTopics: null,
     message: null,
     ...overrides,
   };
@@ -261,6 +273,39 @@ const PLAYBACK_CONTROL_PHRASES: Record<string, PlaybackAction> = {
   "last station": "previous",
 };
 
+// Step 37: discoverability - without this, there is no way for a caller
+// to learn what the voice system can actually do short of trial and
+// error. A static, categorized list (not an open-ended prose paragraph)
+// so a client can render it as a real "Try saying..." menu; kept in sync
+// by hand with the grammar above rather than generated from it, since
+// the grammar itself has no single canonical list of "the" example
+// phrase per capability to draw from automatically.
+const HELP_TOPICS: VoiceHelpTopic[] = [
+  {
+    category: "Play a station",
+    examples: ["Play [station name]", "Play reggae in Jamaica", "Play the news in Trinidad"],
+  },
+  {
+    category: "Playback control",
+    examples: ["Pause", "Resume", "Stop", "Next", "Previous"],
+  },
+  {
+    category: "Find events",
+    examples: ["Events in Jamaica", "Carnival events in Trinidad", "Events this weekend"],
+  },
+];
+
+const HELP_PHRASES = new Set([
+  "help",
+  "what can i say",
+  "what can you do",
+  "commands",
+  "show me commands",
+  "show commands",
+  "what are my options",
+  "what commands are there",
+]);
+
 // Resolves a genre+country pair (genreId is null for "any genre") against
 // the existing Step 22 reliability ranking - never a new ranking query.
 // getRankedStationsForCountry already returns every active station in the
@@ -390,6 +435,10 @@ export async function resolveVoiceCommand(
   const playbackAction = PLAYBACK_CONTROL_PHRASES[normalized];
   if (playbackAction) {
     return emptyResult("playback_control", { action: playbackAction });
+  }
+
+  if (HELP_PHRASES.has(normalized)) {
+    return emptyResult("help", { helpTopics: HELP_TOPICS });
   }
 
   const genreAndCountryMatch = GENRE_AND_COUNTRY_PATTERN.exec(text);
