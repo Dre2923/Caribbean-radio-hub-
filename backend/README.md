@@ -145,6 +145,10 @@ is still calling it.
 - `GET /v1/admin/stations/:id/health-checks` — requires an admin account.
   The station's recorded health checks, most recent first (`limit`,
   default 20, max 100). `404` for an unknown station id.
+- `GET /v1/admin/stations/:id/reliability` — requires an admin account.
+  Computed `uptimePercentage`/`averageLatencyMs` over a recent window
+  (`windowHours`, default 24, max 168). See "Stream Reliability" below.
+  `404` for an unknown station id.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -756,6 +760,48 @@ live-server run with a shortened interval
 (`STATION_HEALTH_CHECK_INTERVAL_MS=3000`) confirming a station that was
 never manually checked accumulated automatic health-check records entirely
 on its own within a few seconds, with no admin action at all.
+
+### Reliability scoring (Step 21)
+
+Steps 19–20 only ever produced individual, point-in-time check rows; the
+per-country quality ranking (Step 22) needs one comparable number per
+station, computed from recent history — "that day's" signal, not a static
+one-time ordering.
+
+`getStationReliability` (`stationHealthRepository.ts`) aggregates a
+station's checks over a configurable recent window (default 24h — matching
+"that day's" from the ranking requirement's own wording; capped at a week)
+into:
+
+- **`uptimePercentage`** — reachable checks ÷ total checks in the window.
+- **`averageLatencyMs`** — averaged across *reachable* checks only. An
+  unreachable check's `latencyMs` measures how long it took to fail, not
+  how fast a working stream responds — mixing the two in would distort the
+  signal, not add to it.
+
+Both are `null`, not `0`, when there's no data to compute them from (zero
+checks in the window, or zero reachable ones for the latency average) — a
+station with no history must never rank identically to one with a
+confirmed 0% track record. A station that's been checked and found down
+every single time correctly gets a real `0`, never `null`.
+
+Exposed as `GET /v1/admin/stations/:id/reliability?windowHours=`
+(admin-gated, `404` for an unknown station id) rather than left as
+backend-only plumbing — a complete, independently testable vertical slice
+before Step 22 builds the actual ranking on top of it. No migration needed:
+this reuses Step 19's `station_health_checks` table entirely.
+
+Verified: clean build and lint; the full 177-test suite (7 new) passing
+three consecutive runs; `npm audit` clean; proven to actually catch two
+real bugs by temporarily (a) collapsing the null-vs-`0` distinction for
+`uptimePercentage` and (b) removing the reachable-only filter from the
+latency average (so a timed-out check's multi-second "latency" pollutes
+the reachable-stream signal), watching the exact three tests that check
+those behaviors fail with precisely the wrong values, then restoring both;
+and a live-server run confirming a station with zero checks returns
+`null`/`null`, and the same station after three real checks against a
+genuinely unreachable domain correctly shows `0`% uptime (not `null`) with
+`averageLatencyMs` still `null`.
 
 ## Security baseline
 

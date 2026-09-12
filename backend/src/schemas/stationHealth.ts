@@ -15,3 +15,23 @@ export const stationHealthCheckSchema = {
   },
   required: ["id", "stationId", "checkedAt", "isReachable", "statusCode", "latencyMs", "error"],
 } as const;
+
+export const stationReliabilitySchema = {
+  type: "object",
+  properties: {
+    stationId: { type: "integer" },
+    windowHours: { type: "integer" },
+    totalChecks: { type: "integer" },
+    reachableChecks: { type: "integer" },
+    uptimePercentage: { type: ["number", "null"] },
+    averageLatencyMs: { type: ["integer", "null"] },
+  },
+  required: [
+    "stationId",
+    "windowHours",
+    "totalChecks",
+    "reachableChecks",
+    "uptimePercentage",
+    "averageLatencyMs",
+  ],
+} as const;

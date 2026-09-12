@@ -338,3 +338,183 @@ describe("GET /v1/admin/stations/:id/health-checks", () => {
     await app.close();
   });
 });
+
+describe("GET /v1/admin/stations/:id/reliability (Step 21)", () => {
+  it("rejects with no token, and with a non-admin token", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "reliability-auth-setup");
+    const stationId = await createStation(app, adminToken, countryId, uniqueStreamUrl("reliability-auth"));
+
+    const noToken = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+    });
+    expect(noToken.statusCode).toBe(401);
+
+    const regularToken = await createRegularToken(app, "reliability-auth");
+    const nonAdmin = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+      headers: { authorization: `Bearer ${regularToken}` },
+    });
+    expect(nonAdmin.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("returns 404 for an unknown station id", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "reliability-notfound");
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations/999999999/reliability",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it("returns null uptime/latency with zero counts when no checks are recorded yet", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "reliability-empty");
+    const stationId = await createStation(app, adminToken, countryId, uniqueStreamUrl("reliability-empty"));
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().reliability).toEqual({
+      stationId,
+      windowHours: 24,
+      totalChecks: 0,
+      reachableChecks: 0,
+      uptimePercentage: null,
+      averageLatencyMs: null,
+    });
+
+    await app.close();
+  });
+
+  it("computes uptime percentage and average latency across reachable checks only", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "reliability-mixed");
+    const stationId = await createStation(app, adminToken, countryId, uniqueStreamUrl("reliability-mixed"));
+
+    // 3 reachable (latencies 10, 20, 30 -> average 20) + 1 unreachable.
+    // Inserted directly rather than through a real network check - this
+    // test is about the aggregation math, already isolated from
+    // checkStreamHealth's own behavior (covered in
+    // tests/streamHealthCheck.test.ts).
+    await pool.query(
+      `INSERT INTO station_health_checks (station_id, is_reachable, status_code, latency_ms, error)
+       VALUES ($1, true, 200, 10, NULL), ($1, true, 200, 20, NULL),
+              ($1, true, 200, 30, NULL), ($1, false, NULL, 5000, 'timeout')`,
+      [stationId],
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    const reliability = response.json().reliability;
+    expect(reliability.totalChecks).toBe(4);
+    expect(reliability.reachableChecks).toBe(3);
+    expect(reliability.uptimePercentage).toBe(75);
+    expect(reliability.averageLatencyMs).toBe(20);
+
+    await app.close();
+  });
+
+  it("returns 0% uptime (not null) when every check in the window failed", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "reliability-alldown");
+    const stationId = await createStation(app, adminToken, countryId, uniqueStreamUrl("reliability-alldown"));
+
+    await pool.query(
+      `INSERT INTO station_health_checks (station_id, is_reachable, status_code, latency_ms, error)
+       VALUES ($1, false, NULL, 100, 'refused'), ($1, false, NULL, 120, 'refused')`,
+      [stationId],
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const reliability = response.json().reliability;
+    expect(reliability.totalChecks).toBe(2);
+    expect(reliability.uptimePercentage).toBe(0);
+    // No reachable checks at all - nothing to average.
+    expect(reliability.averageLatencyMs).toBeNull();
+
+    await app.close();
+  });
+
+  it("excludes checks outside the requested window", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "reliability-window");
+    const stationId = await createStation(app, adminToken, countryId, uniqueStreamUrl("reliability-window"));
+
+    // One check 30 hours ago (outside a 24h window), one just now.
+    await pool.query(
+      `INSERT INTO station_health_checks (station_id, checked_at, is_reachable, status_code, latency_ms, error)
+       VALUES ($1, now() - interval '30 hours', false, NULL, 100, 'stale')`,
+      [stationId],
+    );
+    await pool.query(
+      `INSERT INTO station_health_checks (station_id, is_reachable, status_code, latency_ms, error)
+       VALUES ($1, true, 200, 50, NULL)`,
+      [stationId],
+    );
+
+    const defaultWindow = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(defaultWindow.json().reliability.totalChecks).toBe(1);
+    expect(defaultWindow.json().reliability.uptimePercentage).toBe(100);
+
+    const widerWindow = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations/${stationId}/reliability?windowHours=48`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(widerWindow.json().reliability.totalChecks).toBe(2);
+    expect(widerWindow.json().reliability.uptimePercentage).toBe(50);
+
+    await app.close();
+  });
+
+  it("rejects a windowHours outside the documented bounds", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "reliability-window-invalid");
+
+    const zero = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations/1/reliability?windowHours=0",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(zero.statusCode).toBe(400);
+
+    const tooWide = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations/1/reliability?windowHours=169",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(tooWide.statusCode).toBe(400);
+
+    await app.close();
+  });
+});
