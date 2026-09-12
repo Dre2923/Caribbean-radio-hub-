@@ -1008,3 +1008,172 @@ describe("Event moderation audit trail (Step 27)", () => {
     await app.close();
   });
 });
+
+describe("Duplicate event detection (Step 28)", () => {
+  it("rejects an exact re-submission (same country, title, startsAt) with 409", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "exact-duplicate");
+    const startsAt = futureIso(24);
+
+    const first = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Duplicate Detection Event",
+      startsAt,
+    });
+    expect(first.statusCode).toBe(201);
+
+    // createEventViaApi, not a raw app.inject - it tracks the created id
+    // for afterEach cleanup regardless of the response status, so if a
+    // future regression ever makes this call unexpectedly succeed (the
+    // exact failure mode this test exists to catch), the real row it
+    // creates gets cleaned up rather than silently polluting the shared
+    // test database the way an untracked app.inject call once did here.
+    const second = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Duplicate Detection Event",
+      startsAt,
+    });
+    expect(second.statusCode).toBe(409);
+
+    await app.close();
+  });
+
+  it("catches a near-duplicate title differing only in case and whitespace", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "case-duplicate");
+    const startsAt = futureIso(24);
+
+    const first = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Sunset Beach Festival",
+      startsAt,
+    });
+    expect(first.statusCode).toBe(201);
+
+    // createEventViaApi, not a raw app.inject - see the identical
+    // comment on the exact-re-submission test above for why.
+    const second = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "  sunset   beach FESTIVAL  ",
+      startsAt,
+    });
+    expect(second.statusCode).toBe(409);
+
+    await app.close();
+  });
+
+  it("does not flag the same title at a different startsAt as a duplicate", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "different-time");
+
+    const first = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Weekly Open Mic",
+      startsAt: futureIso(24),
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Weekly Open Mic",
+      startsAt: futureIso(24 * 8),
+    });
+    expect(second.statusCode).toBe(201);
+
+    await app.close();
+  });
+
+  it("does not flag the same title/time in a different country as a duplicate", async () => {
+    const app = buildApp();
+    const [countryA, countryB] = await getIsolatedCountryIds(app);
+    const token = await createAdminToken(app, "different-country");
+    const startsAt = futureIso(24);
+
+    const first = await createEventViaApi(app, {
+      countryId: countryA,
+      token,
+      title: "Cross-Country Duplicate Title",
+      startsAt,
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await createEventViaApi(app, {
+      countryId: countryB,
+      token,
+      title: "Cross-Country Duplicate Title",
+      startsAt,
+    });
+    expect(second.statusCode).toBe(201);
+
+    await app.close();
+  });
+
+  it("frees up a title/time for resubmission once the original is rejected", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "rejected-frees-up");
+    const startsAt = futureIso(24);
+
+    const first = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Resubmittable Event",
+      startsAt,
+    });
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${first.json().event.id}`,
+      payload: { status: "rejected" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const second = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Resubmittable Event",
+      startsAt,
+    });
+    expect(second.statusCode).toBe(201);
+
+    await app.close();
+  });
+
+  it("rejects a PATCH that would rename an event into a duplicate of another", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "patch-into-duplicate");
+    const startsAt = futureIso(24);
+
+    await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Already Taken Title",
+      startsAt,
+    });
+    const toRename = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Not Yet Taken Title",
+      startsAt,
+    });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${toRename.json().event.id}`,
+      payload: { title: "Already Taken Title" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(409);
+
+    await app.close();
+  });
+});

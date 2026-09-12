@@ -71,6 +71,20 @@ export class InvalidEventCategoryError extends Error {
   }
 }
 
+// Step 28: raised when a submission's (countryId, title, startsAt) exactly
+// matches an existing non-rejected event's - see the migration that adds
+// events_country_title_starts_at_unique for why this is a partial index
+// (excludes rejected events) and deliberately exact-match rather than a
+// fuzzy time-window match.
+export class DuplicateEventError extends Error {
+  constructor() {
+    super(
+      "An event with this title already exists for this country and start time",
+    );
+    this.name = "DuplicateEventError";
+  }
+}
+
 // Same reasoning as stationsRepository.escapeLikePattern: Postgres's default
 // LIKE/ILIKE escape character is already backslash, so escaping a caller's
 // raw search text this way (before it's wrapped in %...% and bound as a
@@ -82,9 +96,21 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
+// Step 28: trim + collapse internal whitespace runs + lowercase - the same
+// modest, deliberately-bounded normalization philosophy as
+// streamUrlValidation.ts's normalizeStreamUrl (case only, no fuzzy
+// matching): catches "the exact same title, retyped or copy-pasted with
+// different capitalization or stray spacing," never attempts to catch two
+// genuinely different titles that merely sound similar.
+export function normalizeEventTitle(title: string): string {
+  return title.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
 const CHECK_VIOLATION = "23514";
 const ENDS_AT_CONSTRAINT = "events_ends_at_after_starts_at";
+const DUPLICATE_EVENT_CONSTRAINT = "events_country_title_starts_at_unique";
 
 // Same COUNT(*) OVER() reasoning as stationsRepository.STATION_SELECT - the
 // filtered-but-unpaginated total in one round trip, harmless overhead on the
@@ -132,6 +158,9 @@ function toEvent(row: EventRow): Event {
 }
 
 function toEventWriteError(err: unknown, countryId?: number): unknown {
+  if (hasPgErrorCode(err, UNIQUE_VIOLATION) && pgConstraintName(err) === DUPLICATE_EVENT_CONSTRAINT) {
+    return new DuplicateEventError();
+  }
   if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION)) {
     const constraint = pgConstraintName(err);
     if (constraint?.includes("category")) return new InvalidEventCategoryError();
@@ -205,12 +234,13 @@ export async function createEvent(input: NewEvent): Promise<Event> {
     newId = await withTransaction(async (client) => {
       const result = await client.query<{ id: number }>(
         `INSERT INTO events
-           (country_id, title, description, venue, starts_at, ends_at, image_url, ticket_url, status, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (country_id, title, title_normalized, description, venue, starts_at, ends_at, image_url, ticket_url, status, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id`,
         [
           input.countryId,
           input.title,
+          normalizeEventTitle(input.title),
           input.description ?? null,
           input.venue ?? null,
           input.startsAt,
@@ -376,6 +406,8 @@ export async function updateEvent(
   if (updates.title !== undefined) {
     values.push(updates.title);
     setClauses.push(`title = $${values.length}`);
+    values.push(normalizeEventTitle(updates.title));
+    setClauses.push(`title_normalized = $${values.length}`);
   }
   if (updates.description !== undefined) {
     values.push(updates.description);

@@ -171,7 +171,8 @@ is still calling it.
   (hidden from the public routes above until an admin approves it); an
   admin's own submission is `approved` immediately. `400` on invalid
   input, an unknown `countryId`, an unknown `categoryIds` entry, or
-  `endsAt` not after `startsAt`.
+  `endsAt` not after `startsAt`. `409` if an event with the same title
+  already exists for this country and start time.
 - `PATCH /v1/events/:id` — requires an admin account. All fields optional.
   This is also how moderation happens: `{ status: "approved" }` or
   `{ status: "rejected" }` on a pending submission — the same
@@ -180,7 +181,9 @@ is still calling it.
   (only valid together with `status`) — the acting admin and a timestamp
   are recorded automatically either way. `categoryIds`, if present,
   *replaces* the event's full category set — omit to leave it untouched,
-  send `[]` to clear it. `404` for an unknown id.
+  send `[]` to clear it. `404` for an unknown id, `409` if the update
+  (e.g. a renamed `title`) would collide with another existing event's
+  title/country/start time.
 - `DELETE /v1/events/:id` — requires an admin account. Permanently deletes
   the event — prefer `PATCH { status: "rejected" }` for routine moderation.
   `404` for an unknown id.
@@ -1205,6 +1208,61 @@ regular user's submission stays unmoderated, a later admin approval
 records that admin and a timestamp, a rejection can carry a
 `moderationReason`, that reason is rejected with `400` without `status`,
 and a title-only edit afterward leaves the moderation record untouched.
+
+### Duplicate event detection (Step 28)
+
+The fifth step of the Events Database bucket, mirroring Step 16's
+near-duplicate stream URL detection for the identical reason it existed
+there: an event is hand-typed by any authenticated user (not just an
+admin), so the same real-world happening being submitted twice with only
+cosmetic title differences is a genuine, expected failure mode.
+
+Added `title_normalized` (trim + collapse internal whitespace + lowercase
+— the same modest, deliberately-bounded philosophy as
+`normalizeStreamUrl`: case only, no fuzzy matching) and a **partial**
+unique index on `(country_id, title_normalized, starts_at)` scoped to
+`WHERE status <> 'rejected'` — partial, not a plain table-wide `UNIQUE`,
+so a submission an admin already rejected never permanently blocks a
+legitimate resubmission from reusing the same title/time. Deliberately
+exact-match on the normalized triple, not a fuzzy time-window heuristic
+("within 2 hours") — that would risk false positives between two
+genuinely different events that happen to share a title, which an exact
+timestamp match cannot. A new `DuplicateEventError` (`409`) applies
+uniformly to `POST /v1/events` and `PATCH /v1/events/:id` — a rename that
+collides with another existing event is caught the same way a create is.
+
+**Found and fixed a real test-pollution incident during this step's own
+regression-proofing** — not a bug in the shipped code or the permanent
+test suite, but a gap in the regression-proof method itself: the first
+version of two duplicate-detection tests used a raw `app.inject` call
+(not the cleanup-tracked `createEventViaApi` helper) for the second,
+expected-to-fail submission. When the deliberately-injected bug made that
+call unexpectedly succeed, nothing tracked the resulting real row for
+`afterEach` cleanup, leaving it orphaned in the shared test database after
+the bug was restored. Cleaned it up, then hardened both tests to use
+`createEventViaApi` for that call, and re-verified live that the same
+injected bug still gets caught **and** now cleans up after itself.
+Generalizing this going forward: any regression-proof that could make an
+assertion-of-rejection unexpectedly succeed must use the same
+cleanup-tracked helper the rest of that test file already uses for its
+real submissions — the identical vigilance already standing for the
+deferred-DDL and test-pollution hazard classes, now extended to the
+regression-proofing process itself.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 241-test suite (6 new) passing three consecutive
+runs both before and after the pollution cleanup; `npm audit` clean;
+proven to actually catch two real bugs by temporarily (a) removing the
+whitespace-collapse step from title normalization and (b) corrupting the
+constraint-name string the duplicate-detection error mapping matches
+against, and watching the exact tests that check those behaviors fail
+with the precise wrong values (a near-duplicate slipping through as
+`201`; a real duplicate surfacing as an unmapped `500` instead of `409`)
+before restoring both; and a live-server run confirming an exact
+re-submission and a case/whitespace near-duplicate both `409`, a
+title/time freed up by rejecting the original resubmits cleanly as `201`,
+and the same title at a different time or in a different country is
+never flagged.
 
 ## Security baseline
 

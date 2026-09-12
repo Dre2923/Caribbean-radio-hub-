@@ -10,6 +10,7 @@ import {
   InvalidCountryError,
   InvalidEndsAtError,
   InvalidEventCategoryError,
+  DuplicateEventError,
   type EventStatus,
 } from "../repositories/eventsRepository.js";
 import { getUserRole } from "../repositories/usersRepository.js";
@@ -231,6 +232,9 @@ async function createEventHandler(
     if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
     }
+    if (err instanceof DuplicateEventError) {
+      return reply.status(409).send({ status: "error", message: err.message });
+    }
     throw err;
   }
 }
@@ -274,6 +278,9 @@ async function updateEventHandler(
     }
     if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
+    }
+    if (err instanceof DuplicateEventError) {
+      return reply.status(409).send({ status: "error", message: err.message });
     }
     throw err;
   }
@@ -448,7 +455,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "A regular user's submission starts pending and is hidden from the public " +
           "listing until an admin approves it via PATCH; an admin's own submission is " +
           "approved immediately. Optional categoryIds attaches it to existing event " +
-          "categories (GET /v1/event-categories).",
+          "categories (GET /v1/event-categories). `409` if an event with the same " +
+          "title already exists for this country and start time.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         body: createEventBodySchema,
@@ -460,6 +468,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           },
           400: errorResponseSchema,
           401: errorResponseSchema,
+          409: errorResponseSchema,
         },
       },
     },
@@ -504,6 +513,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           401: errorResponseSchema,
           403: errorResponseSchema,
           404: errorResponseSchema,
+          409: errorResponseSchema,
         },
       },
     },
