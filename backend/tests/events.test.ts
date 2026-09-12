@@ -747,3 +747,124 @@ describe("Event categories (Step 25)", () => {
     await app.close();
   });
 });
+
+describe("Event search and date-range filtering (Step 26)", () => {
+  it("q filters case-insensitively by a substring of the title", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "search-title");
+
+    const alpha = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Search Target Alpha Event",
+    });
+    await createEventViaApi(app, { countryId, token, title: "Search Target Beta Event" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&q=alpha`,
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([alpha.json().event.id]);
+
+    await app.close();
+  });
+
+  it("startsAfter/startsBefore filter an inclusive date-time range against startsAt", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "date-range");
+
+    const soon = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Date Range Soon Event",
+      startsAt: futureIso(10),
+    });
+    const later = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Date Range Later Event",
+      startsAt: futureIso(100),
+    });
+
+    const afterOnly = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&startsAfter=${encodeURIComponent(futureIso(50))}`,
+    });
+    expect(
+      (afterOnly.json().events as Array<{ id: number }>).map((event) => event.id),
+    ).toEqual([later.json().event.id]);
+
+    const beforeOnly = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&startsBefore=${encodeURIComponent(futureIso(50))}`,
+    });
+    expect(
+      (beforeOnly.json().events as Array<{ id: number }>).map((event) => event.id),
+    ).toEqual([soon.json().event.id]);
+
+    // The bounds are inclusive: filtering with the exact startsAt of an
+    // event as both edges of the range must still include that event.
+    const exactBoundary = await app.inject({
+      method: "GET",
+      url:
+        `/v1/events?countryId=${countryId}` +
+        `&startsAfter=${encodeURIComponent(soon.json().event.startsAt)}` +
+        `&startsBefore=${encodeURIComponent(soon.json().event.startsAt)}`,
+    });
+    expect(
+      (exactBoundary.json().events as Array<{ id: number }>).map((event) => event.id),
+    ).toEqual([soon.json().event.id]);
+
+    await app.close();
+  });
+
+  it("rejects startsAfter after startsBefore", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        `/v1/events?countryId=${countryId}` +
+        `&startsAfter=${encodeURIComponent(futureIso(100))}` +
+        `&startsBefore=${encodeURIComponent(futureIso(10))}`,
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toMatch(/startsAfter/);
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/events supports the same q and date-range filters", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-search");
+    const regularToken = await createRegularToken(app, "admin-search");
+
+    const matching = await createEventViaApi(app, {
+      countryId,
+      token: regularToken,
+      title: "Admin Search Zebra Event",
+      startsAt: futureIso(10),
+    });
+    await createEventViaApi(app, {
+      countryId,
+      token: regularToken,
+      title: "Admin Search Walrus Event",
+      startsAt: futureIso(10),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/events?countryId=${countryId}&q=Zebra&startsBefore=${encodeURIComponent(futureIso(50))}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([matching.json().event.id]);
+
+    await app.close();
+  });
+});

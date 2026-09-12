@@ -18,10 +18,21 @@ import {
   createEventBodySchema,
   eventSchema,
   updateEventBodySchema,
+  MAX_EVENT_SEARCH_LENGTH,
 } from "../schemas/events.js";
 
 function badRequest(reply: FastifyReply, message: string) {
   return reply.status(400).send({ status: "error", message });
+}
+
+// A reversed range (startsAfter after startsBefore) isn't unsafe - it just
+// silently produces an always-empty result, which is more likely a client
+// mistake than an intentional query. A real 400 here is more useful than a
+// confusing empty list, the same "route around the actual confusion" spirit
+// as PATCH /v1/stations/:id's deactivationReason/isActive cross-field check.
+function validDateRange(startsAfter?: string, startsBefore?: string): boolean {
+  if (startsAfter === undefined || startsBefore === undefined) return true;
+  return new Date(startsAfter).getTime() <= new Date(startsBefore).getTime();
 }
 
 function eventNotFound(reply: FastifyReply) {
@@ -53,18 +64,30 @@ function trimEventBodyStrings(body: Partial<TrimmableEventFields> | undefined): 
 interface ListEventsQuery {
   countryId?: number;
   categoryId?: number;
+  q?: string;
+  startsAfter?: string;
+  startsBefore?: string;
   limit?: number;
   offset?: number;
 }
 
-async function listEventsHandler(request: FastifyRequest<{ Querystring: ListEventsQuery }>) {
-  const { countryId, categoryId, limit, offset } = request.query;
+async function listEventsHandler(
+  request: FastifyRequest<{ Querystring: ListEventsQuery }>,
+  reply: FastifyReply,
+) {
+  const { countryId, categoryId, q, startsAfter, startsBefore, limit, offset } = request.query;
+  if (!validDateRange(startsAfter, startsBefore)) {
+    return badRequest(reply, "startsAfter must not be after startsBefore");
+  }
   // Always approved-only, never client-controlled - the public listing must
   // never surface a pending or rejected submission. GET /v1/admin/events
   // (below) is the admin-only route with full moderation visibility.
   const { events, total } = await listEvents({
     countryId,
     categoryId,
+    search: q,
+    startsAfter,
+    startsBefore,
     status: "approved",
     limit,
     offset,
@@ -82,6 +105,9 @@ async function listEventsHandler(request: FastifyRequest<{ Querystring: ListEven
 interface AdminListEventsQuery {
   countryId?: number;
   categoryId?: number;
+  q?: string;
+  startsAfter?: string;
+  startsBefore?: string;
   status?: EventStatus;
   limit?: number;
   offset?: number;
@@ -89,12 +115,26 @@ interface AdminListEventsQuery {
 
 async function listAdminEventsHandler(
   request: FastifyRequest<{ Querystring: AdminListEventsQuery }>,
+  reply: FastifyReply,
 ) {
-  const { countryId, categoryId, status, limit, offset } = request.query;
+  const { countryId, categoryId, q, startsAfter, startsBefore, status, limit, offset } =
+    request.query;
+  if (!validDateRange(startsAfter, startsBefore)) {
+    return badRequest(reply, "startsAfter must not be after startsBefore");
+  }
   // status is undefined unless the caller explicitly filters - showing
   // every submission regardless of moderation state is the entire point of
   // this route: it's the moderation queue itself, not just an audit view.
-  const { events, total } = await listEvents({ countryId, categoryId, status, limit, offset });
+  const { events, total } = await listEvents({
+    countryId,
+    categoryId,
+    search: q,
+    startsAfter,
+    startsBefore,
+    status,
+    limit,
+    offset,
+  });
   return {
     events,
     pagination: {
@@ -237,8 +277,10 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         description:
           "Lists approved events. Filter with countryId and/or categoryId (see " +
-          "GET /v1/event-categories). Paginated with limit " +
-          `(default ${DEFAULT_EVENT_LIST_LIMIT}, max ${MAX_EVENT_LIST_LIMIT}) and offset. ` +
+          "GET /v1/event-categories), q (a case-insensitive substring match against " +
+          "the event title), and/or startsAfter/startsBefore (an inclusive date-time " +
+          "range against startsAt - e.g. \"what's happening this weekend\"). Paginated " +
+          `with limit (default ${DEFAULT_EVENT_LIST_LIMIT}, max ${MAX_EVENT_LIST_LIMIT}) and offset. ` +
           "Ordered soonest-first (startsAt ascending).",
         tags: ["events"],
         querystring: {
@@ -247,6 +289,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           properties: {
             countryId: { type: "integer", minimum: 1 },
             categoryId: { type: "integer", minimum: 1 },
+            q: { type: "string", minLength: 1, maxLength: MAX_EVENT_SEARCH_LENGTH },
+            startsAfter: { type: "string", format: "date-time" },
+            startsBefore: { type: "string", format: "date-time" },
             limit: {
               type: "integer",
               minimum: 1,
@@ -290,9 +335,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         description:
           "Lists events with full visibility (including pending/rejected submissions) " +
-          "for admin moderation. Requires an admin account. Same countryId/categoryId " +
-          "filters as GET /v1/events, plus status to filter to exactly one moderation " +
-          "state - omit status to see the full queue.",
+          "for admin moderation. Requires an admin account. Same countryId/categoryId/q/" +
+          "startsAfter/startsBefore filters as GET /v1/events, plus status to filter to " +
+          "exactly one moderation state - omit status to see the full queue.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         querystring: {
@@ -301,6 +346,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           properties: {
             countryId: { type: "integer", minimum: 1 },
             categoryId: { type: "integer", minimum: 1 },
+            q: { type: "string", minLength: 1, maxLength: MAX_EVENT_SEARCH_LENGTH },
+            startsAfter: { type: "string", format: "date-time" },
+            startsBefore: { type: "string", format: "date-time" },
             status: { type: "string", enum: ["pending", "approved", "rejected"] },
             limit: {
               type: "integer",

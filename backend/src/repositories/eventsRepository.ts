@@ -61,6 +61,17 @@ export class InvalidEventCategoryError extends Error {
   }
 }
 
+// Same reasoning as stationsRepository.escapeLikePattern: Postgres's default
+// LIKE/ILIKE escape character is already backslash, so escaping a caller's
+// raw search text this way (before it's wrapped in %...% and bound as a
+// single parameter - never concatenated into the query string) stops a
+// search for a literal "%" or "_" from being misread as a wildcard. Not a
+// SQL-injection concern either way - purely about search results actually
+// matching what the user typed.
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 const FOREIGN_KEY_VIOLATION = "23503";
 const CHECK_VIOLATION = "23514";
 const ENDS_AT_CONSTRAINT = "events_ends_at_after_starts_at";
@@ -212,6 +223,15 @@ export const MAX_EVENT_LIST_LIMIT = 100;
 export interface EventListFilter {
   countryId?: number;
   categoryId?: number;
+  // Case-insensitive substring match against the event title. Plain ILIKE,
+  // not a full-text index - the identical reasoning and scale assumption as
+  // StationListFilter.search.
+  search?: string;
+  // Inclusive bounds against starts_at - "what's happening this weekend"
+  // is exactly the query an events listing needs to answer that a radio
+  // catalog never did, so this has no station-search analog.
+  startsAfter?: string;
+  startsBefore?: string;
   // Tri-state, the same "undefined means no filter" convention as
   // StationListFilter.isActive: the public route (routes/events.ts) always
   // passes 'approved' explicitly; the admin moderation queue leaves this
@@ -243,6 +263,18 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
     conditions.push(
       `EXISTS (SELECT 1 FROM event_category_assignments eca WHERE eca.event_id = e.id AND eca.category_id = $${values.length})`,
     );
+  }
+  if (filter.search !== undefined && filter.search.trim() !== "") {
+    values.push(`%${escapeLikePattern(filter.search.trim())}%`);
+    conditions.push(`e.title ILIKE $${values.length}`);
+  }
+  if (filter.startsAfter !== undefined) {
+    values.push(filter.startsAfter);
+    conditions.push(`e.starts_at >= $${values.length}`);
+  }
+  if (filter.startsBefore !== undefined) {
+    values.push(filter.startsBefore);
+    conditions.push(`e.starts_at <= $${values.length}`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

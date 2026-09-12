@@ -6,6 +6,7 @@ import { eventCategorySchema } from "./common.js";
 export const MAX_EVENT_TITLE_LENGTH = 200; // matches events.title's column width
 export const MAX_EVENT_VENUE_LENGTH = 300; // matches events.venue's column width
 export const MAX_EVENT_DESCRIPTION_LENGTH = 2000;
+export const MAX_EVENT_SEARCH_LENGTH = 200; // matches MAX_EVENT_TITLE_LENGTH - never a longer match target
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
 // Generous relative to the seeded starter set of event categories (both
 // tables are meant to keep growing via curation), while still bounding an

@@ -155,9 +155,11 @@ is still calling it.
   (`windowHours`, default 24, max 168). See "Stream Reliability" below.
   `404` for an unknown station id.
 - `GET /v1/events` — lists approved events. Public, no auth. Optional
-  `?countryId=`/`?categoryId=` filters (combined with AND). Paginated with
-  `?limit=` (default 50, max 100) and `?offset=`; ordered soonest-first by
-  `startsAt`. See "Events" below.
+  `?countryId=`/`?categoryId=` filters (combined with AND), `?q=`
+  (case-insensitive substring match against the title), and
+  `?startsAfter=`/`?startsBefore=` (an inclusive date-time range against
+  `startsAt`). Paginated with `?limit=` (default 50, max 100) and
+  `?offset=`; ordered soonest-first by `startsAt`. See "Events" below.
 - `GET /v1/events/:id` — a single approved event. `404` for an unknown id
   or a pending/rejected one — the same response either way, the identical
   no-leaking-moderation-state reasoning as a curated-off station's `404`.
@@ -181,9 +183,10 @@ is still calling it.
   the event — prefer `PATCH { status: "rejected" }` for routine moderation.
   `404` for an unknown id.
 - `GET /v1/admin/events` — requires an admin account. The moderation
-  queue: same `?countryId=`/`?categoryId=` filters as `GET /v1/events`,
-  plus `?status=` to narrow to exactly `pending`/`approved`/`rejected` —
-  omit it to see every submission regardless of moderation state.
+  queue: same `?countryId=`/`?categoryId=`/`?q=`/`?startsAfter=`/
+  `?startsBefore=` filters as `GET /v1/events`, plus `?status=` to narrow
+  to exactly `pending`/`approved`/`rejected` — omit it to see every
+  submission regardless of moderation state.
 - `GET /v1/event-categories` — lists the categories an event can be tagged
   with. Public, no auth.
 
@@ -1117,6 +1120,50 @@ they're hydrated on create, filtering correctly narrows
 `GET /v1/events?categoryId=`, `PATCH` both replaces the full set and
 (with `[]`) clears it, a `PATCH` touching only `title` leaves categories
 untouched, and an unknown `categoryId` is rejected with `400`.
+
+### Event search and date-range filtering (Step 26)
+
+The third step of the Events Database bucket, mirroring Step 14's
+search/filtering/pagination for the Radio Master Catalog, adapted for
+what an events listing actually needs.
+
+`q` is a case-insensitive substring match against `title` — the identical
+`ILIKE`/`escapeLikePattern` pattern as `stationsRepository.listStations`'s
+`search` filter, ported into `eventsRepository.ts` (station search
+matches `name`; the analogous identifying field for an event is `title`).
+
+`startsAfter`/`startsBefore` is the genuinely new piece, with no station
+analog: an inclusive date-time range against `starts_at` — "what's
+happening this weekend" is exactly the query an events listing needs to
+answer that a radio catalog never did. A reversed range (`startsAfter`
+after `startsBefore`) isn't unsafe — it just silently produces an
+always-empty result, almost certainly a client mistake rather than an
+intentional query — so a `validDateRange` cross-field check in
+`routes/events.ts` returns a real `400` before the request ever reaches
+the repository, the same "route around the actual confusion instead of a
+technically-correct empty list" spirit as `PATCH /v1/stations/:id`'s
+`deactivationReason`/`isActive` cross-field check.
+
+Both filters apply identically to `GET /v1/events` and
+`GET /v1/admin/events`, composing with every existing filter (`countryId`,
+`categoryId`, `status`) via `AND` — exactly like every filter this listing
+has gained so far. No migration needed: this is pure application-layer
+query logic, the same "no schema change" shape as Step 21.
+
+Verified: clean build and lint (no migration to cycle this step); the
+full 229-test suite (4 new) passing three consecutive runs; `npm audit`
+clean; proven to actually catch two real bugs by temporarily (a)
+disabling the title `ILIKE` filter entirely and (b) changing the
+`startsBefore` bound from inclusive (`<=`) to exclusive (`<`), and
+watching the exact tests that check those behaviors fail with the precise
+wrong event lists (an untargeted extra event returned; an exact-boundary
+event silently dropped) before restoring both; and a live-server run with
+two real events ("Live Jazz Night" starting soon, "Reggae Sunset Fest"
+starting later) confirming `q=jazz`/`q=fest` each isolate the right one
+case-insensitively, `startsAfter`/`startsBefore` each isolate the correct
+side of the boundary, a reversed range is rejected with `400`, and the
+admin listing honors the same `q`+`startsBefore` combination together
+with its own `status` filter.
 
 ## Security baseline
 
