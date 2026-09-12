@@ -1,11 +1,12 @@
 # Caribbean Radio Hub — Admin Dashboard
 
 An internal web console for platform admins: user account management
-(Step 31) and radio station moderation (Step 32) are built; event
-moderation follows in Step 33. Built as its own project (sibling to
-`backend/`), consuming only the backend's existing `/v1/admin/*` API — it
-has no server of its own and no database access; every action goes
-through the same admin-gated endpoints documented in `backend/README.md`.
+(Step 31), radio station moderation (Step 32), and event moderation
+(Step 33) — completing the Admin Dashboard bucket (Steps 31-33). Built as
+its own project (sibling to `backend/`), consuming only the backend's
+existing `/v1/admin/*` API — it has no server of its own and no database
+access; every action goes through the same admin-gated endpoints
+documented in `backend/README.md`.
 
 ## Stack
 
@@ -17,8 +18,8 @@ through the same admin-gated endpoints documented in `backend/README.md`.
 - **Tailwind CSS v4** (`@tailwindcss/vite`) for styling — a utility-first
   system chosen over hand-rolled CSS or a heavier component library for
   the same "move fast, stay consistent" reasoning as the framework choice.
-- **react-router-dom v7** for client-side routing (`/login`, the
-  authenticated `/users` and `/stations` views, more as Step 33 lands).
+- **react-router-dom v7** for client-side routing (`/login` and the
+  authenticated `/users`, `/stations`, and `/events` views).
 - **@tanstack/react-query v5** for server-state (fetching, caching,
   invalidation, mutations) — the current standard for exactly this job
   rather than hand-rolled `useState`/`useEffect` data fetching, which
@@ -98,6 +99,18 @@ server-side.
   Catalog"). An inactive station's row shows its deactivation reason and
   timestamp inline, so a moderator never has to open a detail view just to
   see why something was pulled.
+- **`/events`** (Step 33) — search (`q=`, matches title) plus country and
+  category filters (populated from the public `GET /v1/countries`/
+  `/event-categories` lookups), a pending/approved/rejected/all status
+  filter, and an "upcoming only" toggle, paginated. Approve and Reject
+  actions per row - only the action that would actually change the
+  current status is shown (an already-approved event offers Reject but
+  not Approve, and vice versa), plus a separately red-styled Delete.
+  Rejecting accepts an optional reason in the same confirmation dialog as
+  a station's deactivation reason (`ConfirmDialog`'s `children` slot,
+  generalized in Step 32 for exactly this reuse). A rejected event's row
+  shows its reason and timestamp inline, the same pattern as an inactive
+  station.
 
 ## Verification
 
@@ -118,7 +131,11 @@ rows against real seeded/created stations, deactivating with a reason and
 seeing that reason rendered in the row, reactivating and watching it
 correctly disappear from the inactive-only filter, and deleting for real
 (confirmed against the database afterward, not just the UI no longer
-showing it).
+showing it). For `/events`: search, the status filter transitioning
+correctly as an event moves pending → approved → rejected (including the
+approved-only filter finding it only after approval, and the Approve
+button disappearing once already approved), rejecting with a reason and
+seeing that reason rendered in the row, and deleting for real.
 
 ## CI
 

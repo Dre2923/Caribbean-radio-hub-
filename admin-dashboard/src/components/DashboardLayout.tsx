@@ -1,12 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 
-// Event moderation (Step 33) adds its own entry here as it's built, the
-// same incremental-bucket shape as every other multi-step bucket in
-// docs/BUILD_MANIFEST.md.
 const NAV_ITEMS = [
   { to: "/users", label: "Users" },
   { to: "/stations", label: "Stations" },
+  { to: "/events", label: "Events" },
 ];
 
 export function DashboardLayout() {

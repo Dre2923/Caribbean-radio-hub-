@@ -60,3 +60,35 @@ export interface Station {
   createdAt: string;
   updatedAt: string;
 }
+
+// Mirrors backend/src/schemas/events.ts's eventSchema/EVENT_STATUSES.
+export type EventStatus = "pending" | "approved" | "rejected";
+
+export interface EventCategory {
+  id: number;
+  name: string;
+}
+
+export interface Event {
+  id: number;
+  countryId: number;
+  title: string;
+  description: string | null;
+  venue: string | null;
+  venueAddress: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  startsAt: string;
+  endsAt: string | null;
+  imageUrl: string | null;
+  ticketUrl: string | null;
+  status: EventStatus;
+  categories: EventCategory[];
+  createdByUserId: number | null;
+  moderatedAt: string | null;
+  moderatedByUserId: number | null;
+  moderationReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  distanceKm: number | null;
+}
