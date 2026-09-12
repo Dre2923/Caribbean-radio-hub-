@@ -1,0 +1,47 @@
+name: Admin Dashboard CI
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "admin-dashboard/**"
+      - ".github/workflows/admin-dashboard-ci.yml"
+  pull_request:
+    paths:
+      - "admin-dashboard/**"
+      - ".github/workflows/admin-dashboard-ci.yml"
+
+# Least-privilege default: this workflow only reads the repo and builds a
+# static bundle, it never needs write access to anything - the identical
+# posture as backend-ci.yml.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: admin-dashboard
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin-dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (TypeScript + Vite)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Audit dependencies (fail on high/critical)
+        run: npm audit --audit-level=high

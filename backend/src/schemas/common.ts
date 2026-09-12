@@ -21,11 +21,26 @@ export const userSchema = {
     countryId: { type: ["integer", "null"] },
     createdAt: { type: "string", format: "date-time" },
     // Never client-settable - see usersRepository.ts ensureBootstrapAdminRole
-    // for the only way this becomes "admin". Surfaced here so a client can
-    // conditionally show admin-only UI without a separate lookup.
+    // and PATCH /v1/admin/users/:id for the only two ways this changes.
+    // Surfaced here so a client can conditionally show admin-only UI
+    // without a separate lookup.
     role: { type: "string", enum: ["user", "admin"] },
+    // Step 31: only non-null once this account's role has actually
+    // changed from its created default - see usersRepository.ts's User
+    // interface for the full null-means-what breakdown.
+    roleChangedAt: { type: ["string", "null"], format: "date-time" },
+    roleChangedByUserId: { type: ["integer", "null"] },
   },
-  required: ["id", "email", "displayName", "countryId", "createdAt", "role"],
+  required: [
+    "id",
+    "email",
+    "displayName",
+    "countryId",
+    "createdAt",
+    "role",
+    "roleChangedAt",
+    "roleChangedByUserId",
+  ],
 } as const;
 
 export const countrySchema = {

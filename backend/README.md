@@ -102,6 +102,17 @@ is still calling it.
   the account after verifying the password, for the same reason as password
   changes above. `401` if the password is wrong. `204` on success.
   Rate-limited to 5/min.
+- `GET /v1/admin/users` — requires an admin account. Optional `?q=`
+  (case-insensitive substring match against email or displayName) and
+  `?role=` (narrow to exactly `user`/`admin` — omit for every account).
+  Paginated with `?limit=` (default 50, max 100) and `?offset=`. See
+  "Admin user management" above.
+- `GET /v1/admin/users/:id` — requires an admin account. `404` for an
+  unknown id.
+- `PATCH /v1/admin/users/:id` — requires an admin account. Body:
+  `{ role: "user" | "admin" }`. `404` for an unknown id, `409` if this
+  would demote the last remaining admin (including an admin demoting
+  themselves) — see "Admin user management" above.
 - `GET /v1/stations` — lists active radio stations. Public, no auth.
   Optional `?countryId=`/`?genreId=`/`?languageId=` filters (combined with
   AND) and `?q=` (case-insensitive substring match against the name).
@@ -347,16 +358,18 @@ request body tries to send (same `additionalProperties: false` mechanism
 covered in "Request validation" above), and there is no endpoint that lets
 an account set its own or anyone else's role.
 
-- **The only way to become an admin right now is `ADMIN_EMAILS`** (see
-  `.env.example`), a comma-separated allowlist checked on both
-  registration and every login (`ensureBootstrapAdminRole` in
-  `src/repositories/usersRepository.ts`). There's no admin-management
-  endpoint yet — that's the Admin Dashboard (Steps 31–33) — so this
-  config-driven "break-glass" bootstrap is what makes admin-gated routes
-  reachable at all before then. It's deliberately **one-way**: removing an
-  email from `ADMIN_EMAILS` never demotes an existing admin — an operator
-  typo here must never silently lock out the only admin account. Real
-  demotion is a future admin-management concern.
+- **The very first admin is always `ADMIN_EMAILS`** (see `.env.example`),
+  a comma-separated allowlist checked on both registration and every login
+  (`ensureBootstrapAdminRole` in `src/repositories/usersRepository.ts`) —
+  the config-driven "break-glass" bootstrap that makes admin-gated routes
+  reachable at all on a brand-new deployment with no admin account yet.
+  It's deliberately **one-way**: removing an email from `ADMIN_EMAILS`
+  never demotes an existing admin — an operator typo here must never
+  silently lock out the only admin account.
+- **Every subsequent role change goes through `PATCH /v1/admin/users/:id`**
+  (Step 31 — see "Admin user management" below), a real admin-management
+  endpoint. Both paths funnel through the same `setUserRole`, so the same
+  audit trail and last-admin protection apply either way.
 - **`app.requireAdmin`** (`src/app.ts`) is the guard a route adds to gate
   itself to admins: `preHandler: [app.authenticate, app.requireAdmin]`
   (in that order — it reads `request.user`, which only `authenticate`
@@ -381,6 +394,38 @@ production route exists yet — an unauthenticated request gets `401`, an
 authenticated non-admin gets `403`, an authenticated admin gets `200`, and
 promoting/demoting an account via `setUserRole` takes effect on the very
 next request using the *same, already-issued* token in both directions.
+
+### Admin user management (Step 31)
+
+The first step of the Admin Dashboard bucket (Steps 31-33), and a real gap
+found during the Steps 27-64 architecture research
+(`docs/ARCHITECTURE_PLAN.md`): before this, `setUserRole`/`getUserRole`
+existed only as repository functions, reachable solely through the
+`ADMIN_EMAILS` bootstrap allowlist above, with no API surface for a human
+admin to list accounts or manage roles at all — a real dashboard needs
+user management alongside the station/event moderation this build already
+had.
+
+- `GET /v1/admin/users` / `GET /v1/admin/users/:id` / `PATCH
+  /v1/admin/users/:id` — see the Endpoints list below for the full
+  request/response shape.
+- **Role changes are audited.** `users` gained `role_changed_at`/
+  `role_changed_by_user_id` (migration `1700000018000_users_role_change_audit`)
+  — the identical audit-trail shape already established for
+  `radio_stations.deactivated_at`/`by` (Step 17) and
+  `events.moderated_at`/`by` (Step 27). `role_changed_by_user_id` stays
+  `null` for the automated `ADMIN_EMAILS` bootstrap promotion (no human
+  admin acted — the same "`null` means the system did this" convention as
+  `radio_stations`' Step 19-23 automated deactivation) while
+  `role_changed_at` is still set, so an admin can tell "the system
+  bootstrapped this account" from "another admin explicitly promoted it."
+- **The last remaining admin can never be demoted — not even by
+  themselves.** `setUserRole` locks every current admin row
+  (`SELECT ... FOR UPDATE`) before checking whether the target is the sole
+  admin, so two concurrent demotion requests can't both read "someone else
+  is still an admin" and each proceed — closing off a permanent-lockout
+  scenario outright rather than relying on client-side care. Rejected with
+  `409`.
 
 ## Radio Master Catalog
 

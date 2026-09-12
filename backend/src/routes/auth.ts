@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { hashPassword, verifyPassword, DUMMY_PASSWORD_HASH } from "../utils/password.js";
 import {
   findUserByEmail,
+  findUserById,
   updatePasswordHash,
   ensureBootstrapAdminRole,
 } from "../repositories/usersRepository.js";
@@ -56,20 +57,17 @@ async function login(
   // ADMIN_EMAILS after the account already exists still takes effect the
   // next time that person logs in, without needing a re-registration or a
   // manual DB edit.
-  const role = await ensureBootstrapAdminRole(user.id, user.email, env.adminEmails);
+  await ensureBootstrapAdminRole(user.id, user.email, env.adminEmails);
+  // Re-fetched rather than patching the pre-bootstrap `user` object's role
+  // in place: a bootstrap promotion also writes roleChangedAt/
+  // roleChangedByUserId (see usersRepository.setUserRole), and the
+  // in-memory `user` fetched above predates that write, so only a fresh
+  // read reflects all three consistently - the exact class of staleness
+  // bug a manually reconstructed response object risks.
+  const currentUser = (await findUserById(user.id)) ?? user;
 
   const token = await app.jwt.sign({ sub: user.id, email: user.email, tv: user.tokenVersion });
-  return reply.send({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      countryId: user.countryId,
-      createdAt: user.createdAt,
-      role,
-    },
-  });
+  return reply.send({ token, user: currentUser });
 }
 
 const RESET_REQUESTED_MESSAGE =
