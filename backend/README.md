@@ -225,6 +225,27 @@ is still calling it.
   `not_found`/`unrecognized`) plus whatever data that intent needs. Always
   `200` for a well-formed request, even an unrecognized command — see
   "Voice System" below. `400` only for a missing/empty `text`.
+- `GET /v1/me/favorites/stations` — requires authentication. Lists the
+  caller's favorited stations, most-recently-favorited first. Paginated
+  with `?limit=` (default 50, max 100) and `?offset=`. See "User Features"
+  below.
+- `PUT /v1/me/favorites/stations/:stationId` — requires authentication.
+  Favorites a station for the caller. Idempotent — favoriting an
+  already-favorited station succeeds with no error. `404` for an unknown
+  or curated-off (inactive) station — the same response either way as
+  `GET /v1/stations/:id`.
+- `DELETE /v1/me/favorites/stations/:stationId` — requires authentication.
+  Un-favorites a station for the caller. Idempotent — succeeds whether or
+  not it was favorited, or even still exists.
+- `GET /v1/me/favorites/events` — requires authentication. Lists the
+  caller's favorited events, most-recently-favorited first. Same
+  pagination as the stations equivalent.
+- `PUT /v1/me/favorites/events/:eventId` — requires authentication.
+  Favorites an event for the caller. Idempotent. `404` for an unknown,
+  pending, or rejected event — the same response either way as
+  `GET /v1/events/:id`.
+- `DELETE /v1/me/favorites/events/:eventId` — requires authentication.
+  Un-favorites an event for the caller. Idempotent.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1673,6 +1694,101 @@ SQL-injection-shaped command resolves as an inert `not_found` with the
 `radio_stations` row count provably unchanged before and after, and an
 emoji-decorated `"play reggae in Jamaica 🇯🇲🎵"` still correctly resolves
 both the country and the genre.
+
+## User Features
+
+### Favorites (Step 51)
+
+The first step of the User Features bucket (Steps 51–55), per
+`docs/ARCHITECTURE_PLAN.md`'s capability boundary ("51–55 User
+Features... Yes — pure backend"). Favorites is the foundational
+personalization primitive the rest of the bucket (listening history,
+notification preferences) builds alongside — the same "core data model
+first" shape Step 12 played for the Radio Master Catalog and Step 24
+played for the Events Database.
+
+- **Two plain many-to-many junction tables**
+  (`user_favorite_stations`/`user_favorite_events`, migration
+  `1700000019000_user_favorites`), not one polymorphic table with a
+  resource-type discriminator column — a real foreign key to the correct
+  target table on each side (so the database itself validates and cascades
+  correctly), the identical shape already established for
+  `station_genres`/`station_languages` (Step 13) and
+  `event_category_assignments` (Step 25), just between a user and a
+  resource instead of between two resources. A composite primary key
+  (`user_id`, `<resource>_id`) on each: the pair *is* the whole fact, it
+  doubles as the uniqueness constraint, and its leading column already
+  gives exactly the index shape "every favorite for this user" needs — no
+  separate index required. `ON DELETE CASCADE` on both sides of both
+  tables means deleting a user or a station/event never leaves an orphaned
+  favorite row behind.
+- **Idempotent by design, at the HTTP layer, not just the database's
+  `ON CONFLICT`.** `PUT .../favorites/stations/:id` favoriting an
+  already-favorited station succeeds with no error (`204`), and
+  `DELETE .../favorites/stations/:id` un-favoriting one that isn't
+  currently favorited — or was never favorited at all — is equally a clean
+  `204`. A favorite is a simple boolean preference from the caller's own
+  point of view ("is this one of mine or not"), not a resource with its
+  own identity worth protecting from a duplicate-create the way a station
+  or event row is; `PUT`'s own idempotent-by-definition semantics are
+  exactly the right HTTP verb for "ensure this relationship exists,"
+  chosen deliberately over `POST`.
+- **404 for an unknown or not-currently-public target, mirroring the exact
+  same visibility rule the underlying resource's own detail route already
+  enforces.** Favoriting a station requires it to exist and be `isActive`
+  (the identical check `GET /v1/stations/:id` performs before its own
+  `404`); favoriting an event requires it to exist and be `status:
+  "approved"` (the identical check `GET /v1/events/:id` performs). A
+  regular user's own still-`pending` submission, or another admin's
+  `rejected` one, isn't favoritable — the same "the public API never
+  leaks moderation/curation state" rule applied to a personal action, not
+  just a public listing.
+- **A later deactivation/rejection doesn't delete the favorite — it just
+  stops it from surfacing**, the same soft-state-over-hard-delete
+  philosophy this build has applied to every curation-adjacent feature
+  since Step 17. `listFavoriteStations`/`listFavoriteEvents`
+  (`favoritesRepository.ts`) filter to `is_active = true`/`status =
+  'approved'` **at the SQL level**, in the same query that computes
+  `pagination.total` — not as an application-code filter applied after the
+  fact, which would let the returned page and the reported total silently
+  disagree. A station favorited before being curated off keeps its
+  favorite row untouched (confirmed directly against the database, not
+  just the API's own filtered view of it) and reappears with zero
+  re-favoriting needed the moment it's reactivated.
+- **Bulk-hydrated in one round trip, re-sorted back into order** — the
+  identical pattern and reasoning as
+  `stationRankingRepository.getRankedStationsForCountry`: the junction-table
+  query already determines *which* stations/events and in *what order*
+  (most-recently-favorited first); `findStationsByIds`/the new
+  `findEventsByIds` (added to `eventsRepository.ts` for this step, mirroring
+  `findStationsByIds` exactly) then hydrate the full objects for that id set
+  in one more round trip, since Postgres's `ANY($1)` makes no ordering
+  guarantee of its own.
+- **Each favorite is its own wrapper object** (`{ station, favoritedAt }` /
+  `{ event, favoritedAt }`, `schemas/favorites.ts`), not a `favoritedAt`
+  field bolted onto the shared `stationSchema`/`eventSchema` themselves —
+  those schemas are reused by every other station/event-returning endpoint
+  in the API, where "when did the current caller favorite this" has no
+  meaning at all. Keeping it in a dedicated wrapper means every other
+  endpoint's response shape is completely untouched by this feature.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 321-test suite (12 new in `tests/favorites.test.ts`)
+passing three consecutive runs; `npm audit` clean; proven to actually catch
+a real bug by temporarily removing the `s.is_active = true` filter from
+`listFavoriteStations`'s SQL and watching the exact test that checks a
+deactivated station drops out of the list fail (a deactivated station's
+favorite wrongly stayed visible) before restoring it and confirming a
+byte-identical diff against the pre-bug backup; and a live-server run
+against a running compiled server covering the full lifecycle for both
+stations and events — `401` with no token, `404` favoriting an unknown
+station, a real favorite persisting through the list, idempotent
+re-favoriting, a deactivated station disappearing from the list while its
+favorite row is confirmed still present via a direct database query, the
+station reappearing on reactivation with no re-favoriting, idempotent
+un-favoriting, and a rejected event disappearing from the events list
+while its own favorite row is likewise confirmed still present — with all
+live test data deleted afterward.
 
 ## Security baseline
 

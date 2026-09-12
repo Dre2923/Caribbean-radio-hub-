@@ -487,6 +487,19 @@ export async function findEventById(id: number): Promise<Event | null> {
   return row ? toEvent(row) : null;
 }
 
+// Step 51: bulk-hydrates full Event objects (categories included) for a set
+// of ids in one round trip - favoritesRepository already knows *which*
+// events and in *what order* (most-recently-favorited first) from its own
+// junction-table query, so re-fetching one at a time via findEventById
+// would be an avoidable N+1. The identical pattern and reasoning as
+// stationsRepository.findStationsByIds: Postgres's ANY($1) makes no
+// ordering guarantee, so the caller re-sorts these back into its own order.
+export async function findEventsByIds(ids: number[]): Promise<Event[]> {
+  if (ids.length === 0) return [];
+  const result = await query<EventRow>(`${EVENT_SELECT} WHERE e.id = ANY($1)`, [ids]);
+  return result.rows.map(toEvent);
+}
+
 export interface EventUpdate {
   countryId?: number;
   title?: string;
