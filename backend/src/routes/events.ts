@@ -11,6 +11,7 @@ import {
   InvalidEndsAtError,
   InvalidEventCategoryError,
   DuplicateEventError,
+  InvalidLocationError,
   type EventStatus,
 } from "../repositories/eventsRepository.js";
 import { getUserRole } from "../repositories/usersRepository.js";
@@ -36,6 +37,22 @@ function validDateRange(startsAfter?: string, startsBefore?: string): boolean {
   return new Date(startsAfter).getTime() <= new Date(startsBefore).getTime();
 }
 
+// Step 30: nearLatitude/nearLongitude must be given together (a lone
+// coordinate can't center a search), and radiusKm without either is
+// meaningless - the same "route around the actual confusion with a real
+// 400" spirit as validDateRange above, applied before this ever reaches
+// the repository.
+function validNearLocationParams(
+  nearLatitude?: number,
+  nearLongitude?: number,
+  radiusKm?: number,
+): boolean {
+  const hasCenter = nearLatitude !== undefined && nearLongitude !== undefined;
+  if ((nearLatitude !== undefined) !== (nearLongitude !== undefined)) return false;
+  if (radiusKm !== undefined && !hasCenter) return false;
+  return true;
+}
+
 function eventNotFound(reply: FastifyReply) {
   return reply.status(404).send({ status: "error", message: "Event not found" });
 }
@@ -44,6 +61,7 @@ interface TrimmableEventFields {
   title?: string;
   description?: string;
   venue?: string;
+  venueAddress?: string;
   imageUrl?: string;
   ticketUrl?: string;
   moderationReason?: string;
@@ -59,6 +77,7 @@ function trimEventBodyStrings(body: Partial<TrimmableEventFields> | undefined): 
     "title",
     "description",
     "venue",
+    "venueAddress",
     "imageUrl",
     "ticketUrl",
     "moderationReason",
@@ -77,6 +96,9 @@ interface ListEventsQuery {
   startsAfter?: string;
   startsBefore?: string;
   includePast?: boolean;
+  nearLatitude?: number;
+  nearLongitude?: number;
+  radiusKm?: number;
   limit?: number;
   offset?: number;
 }
@@ -85,10 +107,27 @@ async function listEventsHandler(
   request: FastifyRequest<{ Querystring: ListEventsQuery }>,
   reply: FastifyReply,
 ) {
-  const { countryId, categoryId, q, startsAfter, startsBefore, includePast, limit, offset } =
-    request.query;
+  const {
+    countryId,
+    categoryId,
+    q,
+    startsAfter,
+    startsBefore,
+    includePast,
+    nearLatitude,
+    nearLongitude,
+    radiusKm,
+    limit,
+    offset,
+  } = request.query;
   if (!validDateRange(startsAfter, startsBefore)) {
     return badRequest(reply, "startsAfter must not be after startsBefore");
+  }
+  if (!validNearLocationParams(nearLatitude, nearLongitude, radiusKm)) {
+    return badRequest(
+      reply,
+      "nearLatitude and nearLongitude must both be provided together, and radiusKm requires both",
+    );
   }
   // Always approved-only, never client-controlled - the public listing must
   // never surface a pending or rejected submission. GET /v1/admin/events
@@ -105,6 +144,9 @@ async function listEventsHandler(
     startsBefore,
     status: "approved",
     upcomingOnly: !includePast,
+    nearLatitude,
+    nearLongitude,
+    radiusKm,
     limit,
     offset,
   });
@@ -126,6 +168,9 @@ interface AdminListEventsQuery {
   startsBefore?: string;
   status?: EventStatus;
   upcomingOnly?: boolean;
+  nearLatitude?: number;
+  nearLongitude?: number;
+  radiusKm?: number;
   limit?: number;
   offset?: number;
 }
@@ -134,10 +179,28 @@ async function listAdminEventsHandler(
   request: FastifyRequest<{ Querystring: AdminListEventsQuery }>,
   reply: FastifyReply,
 ) {
-  const { countryId, categoryId, q, startsAfter, startsBefore, status, upcomingOnly, limit, offset } =
-    request.query;
+  const {
+    countryId,
+    categoryId,
+    q,
+    startsAfter,
+    startsBefore,
+    status,
+    upcomingOnly,
+    nearLatitude,
+    nearLongitude,
+    radiusKm,
+    limit,
+    offset,
+  } = request.query;
   if (!validDateRange(startsAfter, startsBefore)) {
     return badRequest(reply, "startsAfter must not be after startsBefore");
+  }
+  if (!validNearLocationParams(nearLatitude, nearLongitude, radiusKm)) {
+    return badRequest(
+      reply,
+      "nearLatitude and nearLongitude must both be provided together, and radiusKm requires both",
+    );
   }
   // status is undefined unless the caller explicitly filters - showing
   // every submission regardless of moderation state is the entire point of
@@ -155,6 +218,9 @@ async function listAdminEventsHandler(
     startsBefore,
     status,
     upcomingOnly,
+    nearLatitude,
+    nearLongitude,
+    radiusKm,
     limit,
     offset,
   });
@@ -187,6 +253,9 @@ interface CreateEventBody {
   title: string;
   description?: string;
   venue?: string;
+  venueAddress?: string;
+  latitude?: number;
+  longitude?: number;
   startsAt: string;
   endsAt?: string;
   imageUrl?: string;
@@ -203,6 +272,9 @@ async function createEventHandler(
     title,
     description,
     venue,
+    venueAddress,
+    latitude,
+    longitude,
     startsAt,
     endsAt,
     imageUrl,
@@ -222,6 +294,9 @@ async function createEventHandler(
       title,
       description: description ?? null,
       venue: venue ?? null,
+      venueAddress: venueAddress ?? null,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
       startsAt,
       endsAt: endsAt ?? null,
       imageUrl: imageUrl ?? null,
@@ -246,6 +321,9 @@ async function createEventHandler(
     if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
     }
+    if (err instanceof InvalidLocationError) {
+      return badRequest(reply, err.message);
+    }
     if (err instanceof DuplicateEventError) {
       return reply.status(409).send({ status: "error", message: err.message });
     }
@@ -258,6 +336,9 @@ interface UpdateEventBody {
   title?: string;
   description?: string;
   venue?: string;
+  venueAddress?: string;
+  latitude?: number;
+  longitude?: number;
   startsAt?: string;
   endsAt?: string;
   imageUrl?: string;
@@ -293,6 +374,9 @@ async function updateEventHandler(
     if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
     }
+    if (err instanceof InvalidLocationError) {
+      return badRequest(reply, err.message);
+    }
     if (err instanceof DuplicateEventError) {
       return reply.status(409).send({ status: "error", message: err.message });
     }
@@ -322,9 +406,12 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "the event title), and/or startsAfter/startsBefore (an inclusive date-time " +
           "range against startsAt - e.g. \"what's happening this weekend\"). Excludes " +
           "an event that has already concluded by default - pass includePast=true to " +
-          "see those too. Paginated " +
+          "see those too. nearLatitude/nearLongitude (given together) filter to events " +
+          "with their own coordinates, add a distanceKm to each result, and switch the " +
+          "ordering to nearest-first instead of soonest-first; radiusKm (requires both) " +
+          "additionally caps how far away a result can be. Paginated " +
           `with limit (default ${DEFAULT_EVENT_LIST_LIMIT}, max ${MAX_EVENT_LIST_LIMIT}) and offset. ` +
-          "Ordered soonest-first (startsAt ascending).",
+          "Ordered soonest-first (startsAt ascending) unless a proximity search is active.",
         tags: ["events"],
         querystring: {
           type: "object",
@@ -336,6 +423,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
             startsAfter: { type: "string", format: "date-time" },
             startsBefore: { type: "string", format: "date-time" },
             includePast: { type: "boolean", default: false },
+            nearLatitude: { type: "number", minimum: -90, maximum: 90 },
+            nearLongitude: { type: "number", minimum: -180, maximum: 180 },
+            radiusKm: { type: "number", exclusiveMinimum: 0, maximum: 20000 },
             limit: {
               type: "integer",
               minimum: 1,
@@ -380,11 +470,13 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         description:
           "Lists events with full visibility (including pending/rejected submissions) " +
           "for admin moderation. Requires an admin account. Same countryId/categoryId/q/" +
-          "startsAfter/startsBefore filters as GET /v1/events, plus status to filter to " +
-          "exactly one moderation state (omit to see the full queue) and upcomingOnly " +
-          "to narrow to events that haven't concluded yet (omit to see both past and " +
-          "upcoming - unlike the public route, this never excludes a concluded event " +
-          "by default).",
+          "startsAfter/startsBefore/nearLatitude/nearLongitude/radiusKm filters as " +
+          "GET /v1/events, plus status to filter to exactly one moderation state (omit " +
+          "to see the full queue) and upcomingOnly to narrow to events that haven't " +
+          "concluded yet (omit to see both past and upcoming - unlike the public route, " +
+          "this never excludes a concluded event by default). As with the public route, " +
+          "supplying nearLatitude/nearLongitude sorts results nearest-first instead of " +
+          "by start time.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         querystring: {
@@ -398,6 +490,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
             startsBefore: { type: "string", format: "date-time" },
             status: { type: "string", enum: ["pending", "approved", "rejected"] },
             upcomingOnly: { type: "boolean" },
+            nearLatitude: { type: "number", minimum: -90, maximum: 90 },
+            nearLongitude: { type: "number", minimum: -180, maximum: 180 },
+            radiusKm: { type: "number", exclusiveMinimum: 0, maximum: 20000 },
             limit: {
               type: "integer",
               minimum: 1,

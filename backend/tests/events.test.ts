@@ -100,6 +100,9 @@ interface CreateEventOptions {
   title: string;
   description?: string;
   venue?: string;
+  venueAddress?: string;
+  latitude?: number;
+  longitude?: number;
   startsAt?: string;
   endsAt?: string;
   imageUrl?: string;
@@ -119,6 +122,9 @@ async function createEventViaApi(
       title: options.title,
       description: options.description,
       venue: options.venue,
+      venueAddress: options.venueAddress,
+      latitude: options.latitude,
+      longitude: options.longitude,
       startsAt: options.startsAt ?? futureIso(24),
       endsAt: options.endsAt,
       imageUrl: options.imageUrl,
@@ -1310,6 +1316,305 @@ describe("Excluding concluded events by default (Step 29)", () => {
     });
     const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
     expect(ids).toEqual([upcoming.json().event.id]);
+
+    await app.close();
+  });
+});
+
+// Kingston, Jamaica as the search center, with two other events at
+// increasing real-world distance (roughly 10km and roughly 100km away,
+// using the fact that 1 degree of latitude is ~111km) plus one event with
+// no coordinates at all - deliberately not asserting exact distanceKm
+// values (that would just be re-deriving the Haversine formula in the
+// test), only the relative ordering/filtering behavior the feature
+// actually promises.
+const KINGSTON_LAT = 18.0;
+const KINGSTON_LNG = -76.8;
+const NEAR_KINGSTON_LAT = 18.09; // ~10km north
+const FAR_FROM_KINGSTON_LAT = 18.9; // ~100km north
+
+describe("Event location and proximity search (Step 30)", () => {
+  it("creates an event with venueAddress/latitude/longitude and returns them", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "with-location");
+
+    const response = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Located Event",
+      venueAddress: "Arthur Wint Drive, Kingston",
+      latitude: KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().event.venueAddress).toBe("Arthur Wint Drive, Kingston");
+    expect(response.json().event.latitude).toBe(KINGSTON_LAT);
+    expect(response.json().event.longitude).toBe(KINGSTON_LNG);
+    // Not a proximity search, so there's no "distance from where" to report.
+    expect(response.json().event.distanceKm).toBeNull();
+
+    await app.close();
+  });
+
+  it("an event with no location data reports null venueAddress/latitude/longitude", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "no-location");
+
+    const response = await createEventViaApi(app, { countryId, token, title: "No Location Event" });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().event.venueAddress).toBeNull();
+    expect(response.json().event.latitude).toBeNull();
+    expect(response.json().event.longitude).toBeNull();
+
+    await app.close();
+  });
+
+  it("rejects latitude without longitude (InvalidLocationError, 400)", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "lat-without-lng");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      payload: {
+        countryId,
+        title: "Half Coordinate Event",
+        startsAt: futureIso(24),
+        latitude: KINGSTON_LAT,
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("rejects longitude without latitude (InvalidLocationError, 400)", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "lng-without-lat");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      payload: {
+        countryId,
+        title: "Other Half Coordinate Event",
+        startsAt: futureIso(24),
+        longitude: KINGSTON_LNG,
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("rejects an out-of-range latitude", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "lat-out-of-range");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      payload: {
+        countryId,
+        title: "Impossible Latitude Event",
+        startsAt: futureIso(24),
+        latitude: 90.1,
+        longitude: KINGSTON_LNG,
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("rejects an out-of-range longitude", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "lng-out-of-range");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      payload: {
+        countryId,
+        title: "Impossible Longitude Event",
+        startsAt: futureIso(24),
+        latitude: KINGSTON_LAT,
+        longitude: -180.1,
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("GET /v1/events?nearLatitude=&nearLongitude= excludes events without coordinates and orders nearest-first", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "proximity-order");
+
+    const far = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Far Event",
+      latitude: FAR_FROM_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+    const noLocation = await createEventViaApi(app, { countryId, token, title: "No Location Event" });
+    const near = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Near Event",
+      latitude: NEAR_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+    const center = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Center Event",
+      latitude: KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&nearLatitude=${KINGSTON_LAT}&nearLongitude=${KINGSTON_LNG}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const events = response.json().events as Array<{ id: number; distanceKm: number | null }>;
+    const ids = events.map((event) => event.id);
+
+    // noLocation is never a candidate for a distance-from-a-point search.
+    expect(ids).not.toContain(noLocation.json().event.id);
+    expect(ids).toEqual([center.json().event.id, near.json().event.id, far.json().event.id]);
+    for (const event of events) {
+      expect(event.distanceKm).not.toBeNull();
+    }
+    expect(events[0]?.distanceKm).toBeCloseTo(0, 1);
+    expect(events[0]?.distanceKm as number).toBeLessThan(events[1]?.distanceKm as number);
+    expect(events[1]?.distanceKm as number).toBeLessThan(events[2]?.distanceKm as number);
+
+    await app.close();
+  });
+
+  it("radiusKm caps proximity results to events within range", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "proximity-radius");
+
+    const far = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Radius Far Event",
+      latitude: FAR_FROM_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+    const near = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Radius Near Event",
+      latitude: NEAR_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        `/v1/events?countryId=${countryId}&nearLatitude=${KINGSTON_LAT}&nearLongitude=${KINGSTON_LNG}` +
+        "&radiusKm=50",
+    });
+    expect(response.statusCode).toBe(200);
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toContain(near.json().event.id);
+    expect(ids).not.toContain(far.json().event.id);
+
+    await app.close();
+  });
+
+  it("rejects nearLatitude without nearLongitude as 400", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&nearLatitude=${KINGSTON_LAT}`,
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("rejects radiusKm without near-coordinates as 400", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&radiusKm=50`,
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/events supports the same proximity search, on the full moderation queue", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-proximity");
+    const regularToken = await createRegularToken(app, "admin-proximity-submitter");
+
+    // A still-pending submission - only visible via the admin route, proving
+    // the proximity filter is wired into the moderation-queue query too,
+    // not just the public listing's.
+    const near = await createEventViaApi(app, {
+      countryId,
+      token: regularToken,
+      title: "Pending Near Event",
+      latitude: NEAR_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+    const far = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Approved Far Event",
+      latitude: FAR_FROM_KINGSTON_LAT,
+      longitude: KINGSTON_LNG,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        `/v1/admin/events?countryId=${countryId}&nearLatitude=${KINGSTON_LAT}` +
+        `&nearLongitude=${KINGSTON_LNG}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([near.json().event.id, far.json().event.id]);
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/events rejects radiusKm without near-coordinates as 400", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-radius-without-near");
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/events?countryId=${countryId}&radiusKm=50`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(400);
 
     await app.close();
   });

@@ -159,44 +159,52 @@ is still calling it.
   (case-insensitive substring match against the title), and
   `?startsAfter=`/`?startsBefore=` (an inclusive date-time range against
   `startsAt`). Excludes an event that has already concluded by default —
-  pass `?includePast=true` to see those too. Paginated with `?limit=`
-  (default 50, max 100) and `?offset=`; ordered soonest-first by
-  `startsAt`. See "Events" below.
+  pass `?includePast=true` to see those too. `?nearLatitude=`/
+  `?nearLongitude=` (both required together) restrict results to events
+  that have coordinates and switch the ordering to nearest-first, adding a
+  `distanceKm` to each result; optional `?radiusKm=` further caps results
+  to that great-circle distance (requires both coordinates too). Paginated
+  with `?limit=` (default 50, max 100) and `?offset=`; ordered
+  soonest-first by `startsAt`, or nearest-first when a proximity search is
+  in effect. See "Events" below.
 - `GET /v1/events/:id` — a single approved event. `404` for an unknown id
   or a pending/rejected one — the same response either way, the identical
   no-leaking-moderation-state reasoning as a curated-off station's `404`.
 - `POST /v1/events` — requires authentication (any account, not just
   admin — see "Events" below). Body:
-  `{ countryId, title, description?, venue?, startsAt, endsAt?, imageUrl?, ticketUrl?, categoryIds? }`.
-  `imageUrl`/`ticketUrl` must be HTTPS. The resulting event's `status` is
-  never client-controlled: a regular user's submission starts `pending`
-  (hidden from the public routes above until an admin approves it); an
-  admin's own submission is `approved` immediately. `400` on invalid
-  input, an unknown `countryId`, an unknown `categoryIds` entry, or
-  `endsAt` not after `startsAt`. `409` if an event with the same title
-  already exists for this country and start time.
-- `PATCH /v1/events/:id` — requires an admin account. All fields optional.
-  This is also how moderation happens: `{ status: "approved" }` or
-  `{ status: "rejected" }` on a pending submission — the same
-  "curation is just another PATCH-able field" pattern as
-  `radio_stations.isActive`. May include an optional `moderationReason`
-  (only valid together with `status`) — the acting admin and a timestamp
-  are recorded automatically either way. `categoryIds`, if present,
-  *replaces* the event's full category set — omit to leave it untouched,
-  send `[]` to clear it. `404` for an unknown id, `409` if the update
-  (e.g. a renamed `title`) would collide with another existing event's
-  title/country/start time.
+  `{ countryId, title, description?, venue?, venueAddress?, latitude?, longitude?, startsAt, endsAt?, imageUrl?, ticketUrl?, categoryIds? }`.
+  `imageUrl`/`ticketUrl` must be HTTPS; `latitude`/`longitude` must both be
+  present together and each within its real-world range. The resulting
+  event's `status` is never client-controlled: a regular user's submission
+  starts `pending` (hidden from the public routes above until an admin
+  approves it); an admin's own submission is `approved` immediately. `400`
+  on invalid input, an unknown `countryId`, an unknown `categoryIds`
+  entry, `endsAt` not after `startsAt`, or a lone `latitude`/`longitude`
+  without its pair. `409` if an event with the same title already exists
+  for this country and start time.
+- `PATCH /v1/events/:id` — requires an admin account. All fields optional,
+  including `venueAddress`/`latitude`/`longitude` (subject to the same
+  both-or-neither/range rules as creation). This is also how moderation
+  happens: `{ status: "approved" }` or `{ status: "rejected" }` on a
+  pending submission — the same "curation is just another PATCH-able
+  field" pattern as `radio_stations.isActive`. May include an optional
+  `moderationReason` (only valid together with `status`) — the acting
+  admin and a timestamp are recorded automatically either way.
+  `categoryIds`, if present, *replaces* the event's full category set —
+  omit to leave it untouched, send `[]` to clear it. `404` for an unknown
+  id, `409` if the update (e.g. a renamed `title`) would collide with
+  another existing event's title/country/start time.
 - `DELETE /v1/events/:id` — requires an admin account. Permanently deletes
   the event — prefer `PATCH { status: "rejected" }` for routine moderation.
   `404` for an unknown id.
 - `GET /v1/admin/events` — requires an admin account. The moderation
   queue: same `?countryId=`/`?categoryId=`/`?q=`/`?startsAfter=`/
-  `?startsBefore=` filters as `GET /v1/events`, plus `?status=` to narrow
-  to exactly `pending`/`approved`/`rejected` (omit to see every submission
-  regardless of moderation state) and `?upcomingOnly=true` to narrow to
-  events that haven't concluded yet (omit to see both past and upcoming —
-  unlike the public route, this never excludes a concluded event by
-  default).
+  `?startsBefore=`/`?nearLatitude=`/`?nearLongitude=`/`?radiusKm=` filters
+  as `GET /v1/events`, plus `?status=` to narrow to exactly
+  `pending`/`approved`/`rejected` (omit to see every submission regardless
+  of moderation state) and `?upcomingOnly=true` to narrow to events that
+  haven't concluded yet (omit to see both past and upcoming — unlike the
+  public route, this never excludes a concluded event by default).
 - `GET /v1/event-categories` — lists the categories an event can be tagged
   with. Public, no auth.
 
@@ -1308,6 +1316,79 @@ and one upcoming event confirming the public route's default excludes
 the concluded one, `includePast=true` includes both, the admin queue
 shows both by default, and `upcomingOnly=true` narrows it to just what's
 still ahead.
+
+### Event location and proximity search (Step 30)
+
+The seventh and final step of the Events Database bucket, completing the
+core data model before Admin Dashboard/Voice/Client work (Steps 31+)
+builds on top of it. `venue` (since Step 24) is only a free-text name
+("National Stadium") — nothing a map view or a "near me" search could act
+on. Adds `venueAddress` (a fuller street/city address, distinct from and
+complementary to the venue name), and optional `latitude`/`longitude`
+(migration `1700000017000_events_location`, `addColumn`-only — an
+existing row simply gets `NULL` across all three, the correct "no
+structured location given yet" state, so there's no backfill and no
+deferred-DDL-vs-immediate-query ordering question to navigate this time).
+
+Coordinates are constrained at the database level, not just the
+application layer, per the "assume every input is hostile" standard: a
+`CHECK` (`events_location_lat_long_together`) enforces both-or-neither (a
+lone coordinate is meaningless and would silently corrupt a distance
+calculation), and two more (`events_latitude_range`/
+`events_longitude_range`) enforce each stays within its real-world range
+— all three re-verified independently by the JSON Schema layer
+(`LATITUDE_SCHEMA`/`LONGITUDE_SCHEMA`, matching ranges) so an invalid
+request is rejected with a precise `400` before ever reaching the
+database, with the `CHECK` violation (`InvalidLocationError`) as the
+authoritative backstop for anything the schema layer can't express (a
+partial update leaving one of the pair stale, for instance).
+
+`GET /v1/events`/`GET /v1/admin/events` gained `?nearLatitude=`/
+`?nearLongitude=` (both required together — a lone one is a `400`, the
+same cross-field-validation pattern as `PATCH /v1/events/:id`'s
+`moderationReason`/`status`) and optional `?radiusKm=` (requires both
+coordinates too). Chose the Haversine great-circle formula computed
+directly in SQL over adding PostGIS: a distance-ordered "near me" list is
+a modest, well-bounded feature that doesn't warrant a heavy geospatial
+extension dependency, matching the free/open-source-first, no-overengineering
+standard applied throughout this build. The formula's cosine-sum is
+clamped into `[-1, 1]` with `LEAST`/`GREATEST` before `acos()` — floating-point
+rounding can otherwise push it fractionally outside that domain for two
+very close or near-antipodal points, which would otherwise make `acos()`
+return `NaN` instead of `~0`. A proximity search restricts results to
+events that actually have coordinates (one without them is neither
+included nor excluded by `radiusKm` — it's simply not a candidate),
+overrides the default soonest-first ordering with nearest-first (the same
+"a specific view overrides the default sort" pattern as
+`GET /v1/stations/ranked`'s reliability ordering), and populates each
+result's `distanceKm` — `null` on every other listing, since "distance
+from where" is meaningless outside a proximity search.
+
+Verified: migration up/down/up on dev and test DBs; clean build and
+lint; the full 258-test suite (12 new) passing three consecutive runs;
+`npm audit` clean; proven to actually catch two real bugs by temporarily
+(a) removing the `latitude IS NOT NULL AND longitude IS NOT NULL`
+condition and watching an event with no coordinates wrongly appear in a
+proximity search's results, and (b) removing the `radiusKm`-without-a-center
+rejection from `validNearLocationParams` and watching both the public and
+admin routes wrongly accept it as `200` instead of `400`, in both cases
+restoring immediately after and confirming a byte-identical diff against
+the pre-bug backup; and a live-server run with four real events (one
+central, one ~10km away, one ~100km away, one with no coordinates at all)
+confirming a proximity search returns nearest-first with accurate
+distances, excludes the coordinate-less event, `radiusKm=50` correctly
+caps to just the two nearer events, both `nearLatitude` without
+`nearLongitude` and `radiusKm` without a center correctly `400` on both
+the public and admin routes, and a create attempt with only one
+coordinate correctly `400`s with `InvalidLocationError`'s message — all
+live-server data deleted afterward.
+
+This closes out the Events Database bucket (Steps 24-30): events now
+have full moderation lifecycle, categories, search/date filtering, a
+duplicate-detection safeguard, a default "what's upcoming" view, and
+structured/proximity-searchable location — the same "complete a bucket's
+core data model before building the UI/voice/client layers on top of it"
+shape as Stream Reliability (Steps 19-23) before it.
 
 ## Security baseline
 

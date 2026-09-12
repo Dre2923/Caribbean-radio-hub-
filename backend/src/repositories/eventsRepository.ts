@@ -11,6 +11,13 @@ export interface Event {
   title: string;
   description: string | null;
   venue: string | null;
+  // Step 30: a fuller street/city address, distinct from the venue NAME
+  // above ("National Stadium" vs. "Arthur Wint Drive, Kingston").
+  venueAddress: string | null;
+  // Step 30: both null or both set, never one alone - enforced at the
+  // database level (events_location_lat_long_together), not just here.
+  latitude: number | null;
+  longitude: number | null;
   startsAt: string;
   endsAt: string | null;
   imageUrl: string | null;
@@ -27,6 +34,11 @@ export interface Event {
   moderationReason: string | null;
   createdAt: string;
   updatedAt: string;
+  // Step 30: the great-circle distance in kilometers from the point a
+  // GET /v1/events?nearLatitude=&nearLongitude= search was centered on -
+  // null except when that search was actually used, since the concept
+  // "distance from where" is meaningless outside a proximity query.
+  distanceKm: number | null;
 }
 
 interface EventRow {
@@ -35,6 +47,9 @@ interface EventRow {
   title: string;
   description: string | null;
   venue: string | null;
+  venue_address: string | null;
+  latitude: number | null;
+  longitude: number | null;
   starts_at: string;
   ends_at: string | null;
   image_url: string | null;
@@ -47,6 +62,7 @@ interface EventRow {
   moderation_reason: string | null;
   created_at: string;
   updated_at: string;
+  distance_km: number | null;
   total_count: string;
 }
 
@@ -85,6 +101,20 @@ export class DuplicateEventError extends Error {
   }
 }
 
+// Step 30: raised for any of the three location CHECK constraints -
+// latitude/longitude provided without its pair, or either one outside its
+// real-world valid range. One error type for all three since the client
+// fix is the same shape of correction either way ("check latitude and
+// longitude").
+export class InvalidLocationError extends Error {
+  constructor() {
+    super(
+      "latitude and longitude must both be provided together, and each within its valid range",
+    );
+    this.name = "InvalidLocationError";
+  }
+}
+
 // Same reasoning as stationsRepository.escapeLikePattern: Postgres's default
 // LIKE/ILIKE escape character is already backslash, so escaping a caller's
 // raw search text this way (before it's wrapped in %...% and bound as a
@@ -111,6 +141,11 @@ const FOREIGN_KEY_VIOLATION = "23503";
 const CHECK_VIOLATION = "23514";
 const ENDS_AT_CONSTRAINT = "events_ends_at_after_starts_at";
 const DUPLICATE_EVENT_CONSTRAINT = "events_country_title_starts_at_unique";
+const LOCATION_CONSTRAINTS = new Set([
+  "events_location_lat_long_together",
+  "events_latitude_range",
+  "events_longitude_range",
+]);
 
 // Same COUNT(*) OVER() reasoning as stationsRepository.STATION_SELECT - the
 // filtered-but-unpaginated total in one round trip, harmless overhead on the
@@ -119,21 +154,35 @@ const DUPLICATE_EVENT_CONSTRAINT = "events_country_title_starts_at_unique";
 // exactly, for the identical reason: a direct JOIN against the junction
 // table would fan an event with N categories out into N duplicated rows
 // before any aggregation could run.
-const EVENT_SELECT = `
-  SELECT
-    e.id, e.country_id, e.title, e.description, e.venue, e.starts_at, e.ends_at,
-    e.image_url, e.ticket_url, e.status, e.created_by_user_id,
-    e.moderated_at, e.moderated_by_user_id, e.moderation_reason,
-    e.created_at, e.updated_at,
-    COALESCE(
-      (SELECT json_agg(json_build_object('id', c.id, 'name', c.name) ORDER BY c.name)
-       FROM event_category_assignments eca JOIN event_categories c ON c.id = eca.category_id
-       WHERE eca.event_id = e.id),
-      '[]'
-    ) AS categories,
-    COUNT(*) OVER() AS total_count
-  FROM events e
-`;
+//
+// distanceExprSql, when given, is the great-circle-distance SQL expression
+// a proximity search computes (see listEvents) - injected here as the
+// distance_km column so every caller (including a plain findEventById)
+// shares one row shape, rather than having a second, near-duplicate SELECT
+// just for the proximity-search case. Callers that aren't doing a
+// proximity search get a literal NULL, matching distanceKm's "meaningless
+// outside a proximity query" contract.
+function buildEventSelect(distanceExprSql = "NULL::double precision"): string {
+  return `
+    SELECT
+      e.id, e.country_id, e.title, e.description, e.venue,
+      e.venue_address, e.latitude, e.longitude, e.starts_at, e.ends_at,
+      e.image_url, e.ticket_url, e.status, e.created_by_user_id,
+      e.moderated_at, e.moderated_by_user_id, e.moderation_reason,
+      e.created_at, e.updated_at,
+      COALESCE(
+        (SELECT json_agg(json_build_object('id', c.id, 'name', c.name) ORDER BY c.name)
+         FROM event_category_assignments eca JOIN event_categories c ON c.id = eca.category_id
+         WHERE eca.event_id = e.id),
+        '[]'
+      ) AS categories,
+      ${distanceExprSql} AS distance_km,
+      COUNT(*) OVER() AS total_count
+    FROM events e
+  `;
+}
+
+const EVENT_SELECT = buildEventSelect();
 
 function toEvent(row: EventRow): Event {
   return {
@@ -142,6 +191,9 @@ function toEvent(row: EventRow): Event {
     title: row.title,
     description: row.description,
     venue: row.venue,
+    venueAddress: row.venue_address,
+    latitude: row.latitude,
+    longitude: row.longitude,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
     imageUrl: row.image_url,
@@ -154,6 +206,7 @@ function toEvent(row: EventRow): Event {
     moderationReason: row.moderation_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    distanceKm: row.distance_km !== null ? Number(row.distance_km) : null,
   };
 }
 
@@ -166,8 +219,12 @@ function toEventWriteError(err: unknown, countryId?: number): unknown {
     if (constraint?.includes("category")) return new InvalidEventCategoryError();
     if (countryId !== undefined) return new InvalidCountryError(countryId);
   }
-  if (hasPgErrorCode(err, CHECK_VIOLATION) && pgConstraintName(err) === ENDS_AT_CONSTRAINT) {
-    return new InvalidEndsAtError();
+  if (hasPgErrorCode(err, CHECK_VIOLATION)) {
+    const constraint = pgConstraintName(err);
+    if (constraint === ENDS_AT_CONSTRAINT) return new InvalidEndsAtError();
+    if (constraint !== undefined && LOCATION_CONSTRAINTS.has(constraint)) {
+      return new InvalidLocationError();
+    }
   }
   return err;
 }
@@ -210,6 +267,9 @@ export interface NewEvent {
   title: string;
   description?: string | null;
   venue?: string | null;
+  venueAddress?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   startsAt: string;
   endsAt?: string | null;
   imageUrl?: string | null;
@@ -234,8 +294,8 @@ export async function createEvent(input: NewEvent): Promise<Event> {
     newId = await withTransaction(async (client) => {
       const result = await client.query<{ id: number }>(
         `INSERT INTO events
-           (country_id, title, title_normalized, description, venue, starts_at, ends_at, image_url, ticket_url, status, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           (country_id, title, title_normalized, description, venue, venue_address, latitude, longitude, starts_at, ends_at, image_url, ticket_url, status, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id`,
         [
           input.countryId,
@@ -243,6 +303,9 @@ export async function createEvent(input: NewEvent): Promise<Event> {
           normalizeEventTitle(input.title),
           input.description ?? null,
           input.venue ?? null,
+          input.venueAddress ?? null,
+          input.latitude ?? null,
+          input.longitude ?? null,
           input.startsAt,
           input.endsAt ?? null,
           input.imageUrl ?? null,
@@ -308,6 +371,16 @@ export interface EventListFilter {
   // opt out of this default too, rather than hard-coding it the way
   // isActive is hard-coded for stations.
   upcomingOnly?: boolean;
+  // Step 30: proximity search. nearLatitude/nearLongitude must be given
+  // together (routes/events.ts validates that cross-field rule before
+  // this function is ever called) to filter to events that have their own
+  // coordinates and, if radiusKm is given, are within that great-circle
+  // distance - and to switch the result ordering to nearest-first instead
+  // of the usual soonest-first. radiusKm alone (no center point) is
+  // meaningless and is likewise rejected by the route before reaching here.
+  nearLatitude?: number;
+  nearLongitude?: number;
+  radiusKm?: number;
   limit?: number;
   offset?: number;
 }
@@ -320,6 +393,8 @@ export interface EventListResult {
 export async function listEvents(filter: EventListFilter = {}): Promise<EventListResult> {
   const conditions: string[] = [];
   const values: unknown[] = [];
+  let distanceExprSql = "NULL::double precision";
+  let orderBySql = "e.starts_at ASC";
 
   if (filter.countryId !== undefined) {
     values.push(filter.countryId);
@@ -355,6 +430,35 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
     // passed.
     conditions.push("COALESCE(e.ends_at, e.starts_at) >= now()");
   }
+  if (filter.nearLatitude !== undefined && filter.nearLongitude !== undefined) {
+    values.push(filter.nearLatitude);
+    const latPlaceholder = `$${values.length}`;
+    values.push(filter.nearLongitude);
+    const lngPlaceholder = `$${values.length}`;
+    // Haversine great-circle distance in kilometers - no PostGIS extension
+    // needed for a "how far is this event" figure, only real trigonometry.
+    // Clamped into [-1, 1] before acos(): floating-point rounding can push
+    // the cosine sum fractionally outside that domain for two very close
+    // or near-antipodal points, which would otherwise make acos() return
+    // NaN instead of ~0.
+    distanceExprSql = `(6371 * acos(LEAST(1, GREATEST(-1,
+      cos(radians(${latPlaceholder})) * cos(radians(e.latitude)) * cos(radians(e.longitude) - radians(${lngPlaceholder}))
+      + sin(radians(${latPlaceholder})) * sin(radians(e.latitude))
+    ))))`;
+    // Only events with their own coordinates can have a distance computed
+    // at all - one lacking them is neither included nor excluded by
+    // radiusKm, it's simply not a candidate for a proximity search.
+    conditions.push("e.latitude IS NOT NULL AND e.longitude IS NOT NULL");
+    if (filter.radiusKm !== undefined) {
+      values.push(filter.radiusKm);
+      conditions.push(`${distanceExprSql} <= $${values.length}`);
+    }
+    // Nearest-first, not soonest-first - a proximity search's entire point
+    // is "what's closest," the same way GET /v1/stations/ranked's entire
+    // point is "what's most reliable," each overriding this listing's
+    // otherwise-default sort for the specific view it's answering.
+    orderBySql = `${distanceExprSql} ASC`;
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -365,11 +469,12 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
   values.push(offset);
   const offsetPlaceholder = `$${values.length}`;
 
-  // Soonest-first: an events listing is a "what's coming up" view, not an
-  // alphabetical catalog like stations - starts_at ASC is the ordering
-  // callers actually want, both publicly and in the admin moderation queue.
+  // Soonest-first by default: an events listing is a "what's coming up"
+  // view, not an alphabetical catalog like stations - starts_at ASC is the
+  // ordering callers actually want, both publicly and in the admin
+  // moderation queue, unless a proximity search overrides it above.
   const result = await query<EventRow>(
-    `${EVENT_SELECT} ${where} ORDER BY e.starts_at ASC LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+    `${buildEventSelect(distanceExprSql)} ${where} ORDER BY ${orderBySql} LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
     values,
   );
   const total = result.rows[0] ? Number(result.rows[0].total_count) : 0;
@@ -387,6 +492,17 @@ export interface EventUpdate {
   title?: string;
   description?: string | null;
   venue?: string | null;
+  venueAddress?: string | null;
+  // undefined on either = leave that field untouched; null on both =
+  // clear the location entirely; a real number on both = set/replace it.
+  // Setting only one of the pair (the other left undefined, still holding
+  // its old value) can violate events_location_lat_long_together if the
+  // row didn't already have a value for the untouched one - the database
+  // is the authoritative enforcement (InvalidLocationError, 400), the
+  // same "DB constraint as the real guarantee" reasoning as every other
+  // CHECK in this schema.
+  latitude?: number | null;
+  longitude?: number | null;
   startsAt?: string;
   endsAt?: string | null;
   imageUrl?: string | null;
@@ -434,6 +550,18 @@ export async function updateEvent(
   if (updates.venue !== undefined) {
     values.push(updates.venue);
     setClauses.push(`venue = $${values.length}`);
+  }
+  if (updates.venueAddress !== undefined) {
+    values.push(updates.venueAddress);
+    setClauses.push(`venue_address = $${values.length}`);
+  }
+  if (updates.latitude !== undefined) {
+    values.push(updates.latitude);
+    setClauses.push(`latitude = $${values.length}`);
+  }
+  if (updates.longitude !== undefined) {
+    values.push(updates.longitude);
+    setClauses.push(`longitude = $${values.length}`);
   }
   if (updates.startsAt !== undefined) {
     values.push(updates.startsAt);

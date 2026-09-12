@@ -5,6 +5,7 @@ import { eventCategorySchema } from "./common.js";
 
 export const MAX_EVENT_TITLE_LENGTH = 200; // matches events.title's column width
 export const MAX_EVENT_VENUE_LENGTH = 300; // matches events.venue's column width
+export const MAX_VENUE_ADDRESS_LENGTH = 500; // a fuller street/city address, more room than the venue name
 export const MAX_EVENT_DESCRIPTION_LENGTH = 2000;
 export const MAX_EVENT_SEARCH_LENGTH = 200; // matches MAX_EVENT_TITLE_LENGTH - never a longer match target
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
@@ -30,6 +31,19 @@ const CATEGORY_ID_LIST_SCHEMA = {
   maxItems: MAX_CATEGORY_IDS,
 } as const;
 
+// Real-world coordinate ranges. Whether one is required together with the
+// other (both or neither) is a cross-field rule this shape alone can't
+// express - enforced by the database's events_location_lat_long_together
+// CHECK (InvalidLocationError, 400), the authoritative guarantee the same
+// way every other CHECK constraint in this schema is.
+// Same as every other optional free-text/nullable field in this schema
+// (description, venue, imageUrl, ticketUrl) - the repository layer stays
+// nullable (EventUpdate.latitude/longitude, matching
+// StationUpdate.description/websiteUrl's identical convention) but PATCH
+// itself only ever replaces with a real value, never clears to null.
+const LATITUDE_SCHEMA = { type: "number", minimum: -90, maximum: 90 } as const;
+const LONGITUDE_SCHEMA = { type: "number", minimum: -180, maximum: 180 } as const;
+
 export const EVENT_STATUSES = ["pending", "approved", "rejected"] as const;
 
 export const eventSchema = {
@@ -40,6 +54,9 @@ export const eventSchema = {
     title: { type: "string" },
     description: { type: ["string", "null"] },
     venue: { type: ["string", "null"] },
+    venueAddress: { type: ["string", "null"] },
+    latitude: { type: ["number", "null"] },
+    longitude: { type: ["number", "null"] },
     startsAt: { type: "string", format: "date-time" },
     endsAt: { type: ["string", "null"], format: "date-time" },
     imageUrl: { type: ["string", "null"] },
@@ -60,6 +77,10 @@ export const eventSchema = {
     moderationReason: { type: ["string", "null"] },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
+    // Step 30: only non-null when this event was returned by a
+    // ?nearLatitude=&nearLongitude= proximity search - "distance from
+    // where" is meaningless otherwise.
+    distanceKm: { type: ["number", "null"] },
   },
   required: [
     "id",
@@ -67,6 +88,9 @@ export const eventSchema = {
     "title",
     "description",
     "venue",
+    "venueAddress",
+    "latitude",
+    "longitude",
     "startsAt",
     "endsAt",
     "imageUrl",
@@ -79,6 +103,7 @@ export const eventSchema = {
     "moderationReason",
     "createdAt",
     "updatedAt",
+    "distanceKm",
   ],
 } as const;
 
@@ -91,6 +116,9 @@ export const createEventBodySchema = {
     title: { type: "string", minLength: 1, maxLength: MAX_EVENT_TITLE_LENGTH },
     description: { type: "string", maxLength: MAX_EVENT_DESCRIPTION_LENGTH },
     venue: { type: "string", minLength: 1, maxLength: MAX_EVENT_VENUE_LENGTH },
+    venueAddress: { type: "string", minLength: 1, maxLength: MAX_VENUE_ADDRESS_LENGTH },
+    latitude: LATITUDE_SCHEMA,
+    longitude: LONGITUDE_SCHEMA,
     startsAt: { type: "string", format: "date-time" },
     endsAt: { type: "string", format: "date-time" },
     imageUrl: HTTPS_URL_SCHEMA,
@@ -108,6 +136,9 @@ export const updateEventBodySchema = {
     title: { type: "string", minLength: 1, maxLength: MAX_EVENT_TITLE_LENGTH },
     description: { type: "string", maxLength: MAX_EVENT_DESCRIPTION_LENGTH },
     venue: { type: "string", minLength: 1, maxLength: MAX_EVENT_VENUE_LENGTH },
+    venueAddress: { type: "string", minLength: 1, maxLength: MAX_VENUE_ADDRESS_LENGTH },
+    latitude: LATITUDE_SCHEMA,
+    longitude: LONGITUDE_SCHEMA,
     startsAt: { type: "string", format: "date-time" },
     endsAt: { type: "string", format: "date-time" },
     imageUrl: HTTPS_URL_SCHEMA,
