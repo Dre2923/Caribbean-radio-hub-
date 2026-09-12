@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { withTransaction } from "../db/transaction.js";
 import { query } from "../db/pool.js";
+import { normalizeStreamUrl } from "../utils/streamUrlValidation.js";
 import type { Genre } from "./genresRepository.js";
 import type { Language } from "./languagesRepository.js";
 
@@ -40,6 +41,21 @@ export class DuplicateStreamUrlError extends Error {
   }
 }
 
+// Step 16: a *different* stream_url string that normalizes (see
+// normalizeStreamUrl) to the same value as an existing station's - never
+// raised for the exact string collision above, which DuplicateStreamUrlError
+// already covers; this is specifically the "looks different, is the same
+// stream" case a byte-for-byte comparison can't catch.
+export class NearDuplicateStreamUrlError extends Error {
+  constructor(streamUrl: string) {
+    super(
+      "A station with an equivalent stream URL is already registered " +
+        `(same host and path, ignoring letter case and an incidental trailing slash): ${streamUrl}`,
+    );
+    this.name = "NearDuplicateStreamUrlError";
+  }
+}
+
 export class InvalidCountryError extends Error {
   constructor(countryId: number) {
     super(`No country with id ${countryId}`);
@@ -63,6 +79,7 @@ export class InvalidLanguageError extends Error {
 
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+const STREAM_URL_NORMALIZED_CONSTRAINT = "radio_stations_stream_url_normalized_key";
 
 // Two independent correlated subqueries, not a single query joining both
 // junction tables directly - a station with (say) 2 genres and 3 languages
@@ -179,13 +196,15 @@ export async function createStation(input: NewStation): Promise<Station> {
   try {
     newId = await withTransaction(async (client) => {
       const result = await client.query<{ id: number }>(
-        `INSERT INTO radio_stations (country_id, name, stream_url, website_url, description, created_by_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO radio_stations
+           (country_id, name, stream_url, stream_url_normalized, website_url, description, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
         [
           input.countryId,
           input.name,
           input.streamUrl,
+          normalizeStreamUrl(input.streamUrl),
           input.websiteUrl ?? null,
           input.description ?? null,
           input.createdByUserId ?? null,
@@ -333,6 +352,8 @@ export async function updateStation(id: number, updates: StationUpdate): Promise
   if (updates.streamUrl !== undefined) {
     values.push(updates.streamUrl);
     setClauses.push(`stream_url = $${values.length}`);
+    values.push(normalizeStreamUrl(updates.streamUrl));
+    setClauses.push(`stream_url_normalized = $${values.length}`);
   }
   if (updates.websiteUrl !== undefined) {
     values.push(updates.websiteUrl);
@@ -391,6 +412,9 @@ class StationNotFoundSentinel extends Error {}
 
 function toStationWriteError(err: unknown, streamUrl?: string, countryId?: number): unknown {
   if (hasPgErrorCode(err, UNIQUE_VIOLATION) && streamUrl !== undefined) {
+    if (pgConstraintName(err) === STREAM_URL_NORMALIZED_CONSTRAINT) {
+      return new NearDuplicateStreamUrlError(streamUrl);
+    }
     return new DuplicateStreamUrlError(streamUrl);
   }
   if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION)) {

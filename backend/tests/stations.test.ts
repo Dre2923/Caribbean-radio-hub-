@@ -886,3 +886,157 @@ describe("GET /v1/admin/stations", () => {
     await app.close();
   });
 });
+
+describe("radio station data quality - near-duplicate stream URLs (Step 16)", () => {
+  it("rejects a near-duplicate stream URL (different host case) with 409", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "near-dupe-case");
+    const streamUrl = uniqueStreamUrl("near-dupe-case");
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Near Dupe Original", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // Same URL, only the host's letter case differs - a byte-for-byte
+    // comparison (and the exact-match stream_url UNIQUE constraint alone)
+    // would let this through as "different," even though it's the same
+    // origin per RFC 3986.
+    const caseVariant = streamUrl.replace("stream.example.com", "STREAM.EXAMPLE.COM");
+    const near = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Near Dupe Copy", streamUrl: caseVariant },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(near.statusCode).toBe(409);
+    expect(near.json().message).toMatch(/equivalent stream URL/i);
+
+    await app.close();
+  });
+
+  it("rejects a near-duplicate stream URL (incidental trailing slash on the root path) with 409", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "near-dupe-slash");
+    // Deliberately a bare origin (no path) for this one - normalizeStreamUrl
+    // only folds a trailing slash away on the *root* path; a URL with a
+    // real path already covers the "not folded" side in the test above.
+    const streamUrl = `https://near-dupe-slash-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.example.com`;
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Trailing Slash Original", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const withTrailingSlash = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Trailing Slash Copy", streamUrl: `${streamUrl}/` },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(withTrailingSlash.statusCode).toBe(409);
+    expect(withTrailingSlash.json().message).toMatch(/equivalent stream URL/i);
+
+    await app.close();
+  });
+
+  it("still returns the original exact-duplicate message for a byte-for-byte repeat", async () => {
+    // Guards against a regression where the new near-duplicate check
+    // silently swallows the original Step 12 exact-match message.
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "exact-dupe-message");
+    const streamUrl = uniqueStreamUrl("exact-dupe-message");
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Exact Dupe Original", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const exact = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Exact Dupe Copy", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(exact.statusCode).toBe(409);
+    expect(exact.json().message).toMatch(/already registered: /i);
+    expect(exact.json().message).not.toMatch(/equivalent stream URL/i);
+
+    await app.close();
+  });
+
+  it("rejects updating a station's streamUrl to a near-duplicate of another station's", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "near-dupe-patch");
+    const existingUrl = uniqueStreamUrl("near-dupe-patch-existing");
+    const ownUrl = uniqueStreamUrl("near-dupe-patch-own");
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Existing Station", streamUrl: existingUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Station To Update", streamUrl: ownUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const nearDuplicateOfExisting = existingUrl.replace("stream.example.com", "STREAM.EXAMPLE.COM");
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { streamUrl: nearDuplicateOfExisting },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(patch.statusCode).toBe(409);
+
+    await app.close();
+  });
+
+  it("allows re-saving a station's own streamUrl unchanged without a false-positive conflict", async () => {
+    // Postgres's UNIQUE constraint never conflicts a row with its own
+    // pre-existing value, but this is worth proving directly rather than
+    // assuming - a PATCH that doesn't touch streamUrl at all, and one that
+    // resends the exact same value, must both still succeed.
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "self-patch");
+    const streamUrl = uniqueStreamUrl("self-patch");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Self Patch Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { streamUrl, name: "Self Patch Station Renamed" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().station.streamUrl).toBe(streamUrl);
+
+    await app.close();
+  });
+});

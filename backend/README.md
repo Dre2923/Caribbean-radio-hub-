@@ -340,9 +340,9 @@ column here at all.
   requires of a direct connection from a listener's device.
 - **`streamUrl` is unique at the database level**, not just checked in
   application code — a duplicate registration is rejected with `409`
-  before it can ever land two rows pointing at the same stream, laying the
-  groundwork Step 16 (data quality) will build on rather than deferring
-  the guarantee entirely to that later step.
+  before it can ever land two rows pointing at the same stream. Step 16
+  (below) layers near-duplicate detection on top of this exact-match
+  guarantee.
 - **Soft-disable via `isActive`, not just delete.** `PATCH { isActive: false }`
   pulls a station from `GET /v1/stations` and turns `GET /v1/stations/:id`
   into a `404` — identical to the 404 for an id that never existed, so the
@@ -487,6 +487,58 @@ same `countryId`/`genreId`/`q`/pagination filters working identically to
 the public route; and the same unknown-field-stripped-not-rejected
 behavior already established elsewhere, verified here too rather than
 assumed to carry over.
+
+### Data quality: near-duplicate stream URLs (Step 16)
+
+Step 12's exact-match `stream_url` `UNIQUE` constraint only ever caught a
+byte-for-byte repeat of a URL already in the catalog. Two admin-typed URLs
+that are the *same stream* in every way that matters —
+`https://Stream.Example.com/live` vs. `https://stream.example.com/live`, or
+a bare `https://stream.example.com` vs. `https://stream.example.com/` —
+would both pass that check and silently create two catalog rows for one
+station. `normalizeStreamUrl` (`src/utils/streamUrlValidation.ts`)
+case-folds the scheme and host (case-insensitive per RFC 3986 §3.1/§3.2.2),
+folds away an explicit default `:443` port, and folds a bare trailing slash
+on the *root* path only — a longer path's trailing slash is left alone,
+since real Icecast/Shoutcast-style stream servers can route `/stream` and
+`/stream/` to different mount points, so treating that as a duplicate would
+be a false positive, not a real one. Path (beyond the root case) and query
+string stay case-sensitive and untouched, since both can be genuinely
+meaningful to a stream server.
+
+The normalized form is stored in `stream_url_normalized`
+(migrations `1700000009000_radio_stations_stream_url_normalized` +
+`1700000009500_backfill_stream_url_normalized`, split into two files for
+the same reason Step 02's countries and Step 13's genre/language seed were:
+`pgm.addColumn` is deferred schema DSL that only actually runs once a
+migration function returns, so an immediate `pgm.db.query` backfill in the
+*same* migration would run against a table that, as far as the database is
+concerned, doesn't have the column yet) with its own `UNIQUE` constraint —
+the database itself enforces this, not just application code a future
+direct caller could bypass, the identical defense-in-depth reasoning
+already applied to `stream_url` itself. A violation of this constraint is
+reported as `NearDuplicateStreamUrlError` (409, a distinct message from the
+exact-match `DuplicateStreamUrlError`) so an admin can tell the two cases
+apart instead of getting an ambiguous "already registered."
+
+Verified: a full migration up/down/up cycle on both the dev and test
+databases; `tests/streamUrlValidation.test.ts` unit-tests
+`normalizeStreamUrl` directly (host case-folding without touching path
+case, default-port folding, root-only trailing-slash folding, query strings
+preserved, and a malformed-URL fallback); `tests/stations.test.ts` proves
+the real end-to-end behavior against Postgres — a host-case variant and a
+root-path trailing-slash variant of an existing station's `streamUrl` both
+rejected with `409` and the near-duplicate message on `POST`, the same
+rejection on `PATCH` when updating one station's `streamUrl` to a
+near-duplicate of *another* station's, a byte-for-byte repeat still getting
+the original exact-duplicate message (not swallowed by the new check), and
+re-saving a station's own unchanged `streamUrl` correctly succeeding (no
+false-positive self-conflict). Proven to actually catch the bug, not just
+pass by construction: temporarily made `createStation`/`updateStation`
+write the raw (non-normalized) `streamUrl` into the normalized column,
+watched the three new near-duplicate tests fail with the exact wrong status
+code (`201`/`200` instead of `409`), then restored the fix and watched the
+full 139-test suite pass three consecutive runs; `npm audit` clean.
 
 ## Security baseline
 

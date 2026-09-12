@@ -8,6 +8,7 @@ import {
   DEFAULT_STATION_LIST_LIMIT,
   MAX_STATION_LIST_LIMIT,
   DuplicateStreamUrlError,
+  NearDuplicateStreamUrlError,
   InvalidCountryError,
   InvalidGenreError,
   InvalidLanguageError,
@@ -167,7 +168,7 @@ async function createStationHandler(
     });
     return reply.status(201).send({ station });
   } catch (err) {
-    if (err instanceof DuplicateStreamUrlError) {
+    if (err instanceof DuplicateStreamUrlError || err instanceof NearDuplicateStreamUrlError) {
       return reply.status(409).send({ status: "error", message: err.message });
     }
     if (err instanceof InvalidCountryError) {
@@ -202,7 +203,7 @@ async function updateStationHandler(
     }
     return { station };
   } catch (err) {
-    if (err instanceof DuplicateStreamUrlError) {
+    if (err instanceof DuplicateStreamUrlError || err instanceof NearDuplicateStreamUrlError) {
       return reply.status(409).send({ status: "error", message: err.message });
     }
     if (err instanceof InvalidCountryError) {
