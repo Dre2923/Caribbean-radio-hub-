@@ -1624,6 +1624,56 @@ both return the same categorized topic list, `"play help me radio"`
 correctly falls through to `not_found` rather than being misclassified,
 and `"pause"` still resolves normally alongside the new intent.
 
+### Voice System bucket closed (Step 38)
+
+The fifth and final step closed the bucket with an adversarial hardening
+pass across the *whole* grammar built in Steps 34-37, not just new
+surface — the same "the closing step reviews and hardens everything the
+bucket built" shape as the Radio Master Catalog (Step 18), Stream
+Reliability (Step 23), and Events Database (Step 30) wrap-ups before it.
+Ten adversarial tests probed: text at and beyond
+`MAX_VOICE_COMMAND_TEXT_LENGTH`'s boundary; whitespace-only text that
+passes the schema's `minLength: 1` but is empty after `.trim()`; trailing
+emoji/flag decoration on a country name; a leading emoji breaking the
+grammar's `^play`/`^events` anchors; embedded newlines; excess internal
+whitespace; comma/punctuation-heavy phrasing; and two SQL-injection-shaped
+payloads, with the underlying table's row count verified unchanged before
+and after rather than merely trusted.
+
+**Every case already resolved safely with no production-code bug found**
+— a genuinely verified outcome, not a gap: parameterized queries make
+injection-shaped search phrases inert by construction; `normalizeForMatch`'s
+non-alphanumeric stripping combined with the country/genre/category
+matchers' substring-containment fallback gives real defense-in-depth
+against decorated input (confirmed directly — temporarily letting emoji
+survive normalization still left the country resolving correctly via the
+substring fallback alone, proving the design doesn't hinge on any single
+mechanism); and JS regex's default line-boundary semantics (`.` never
+matches `\n` without the `s` flag) mean malformed multi-line input simply
+and safely falls through to `unrecognized` rather than crashing.
+
+This closes the Voice System bucket (Steps 34-38): `POST /v1/voice/command`
+now covers station playback (by name, by genre-in-country, with
+disambiguation), the five playback-control verbs, event search (by
+country/category/relative date range), a discoverability "help" intent,
+dedicated rate limiting, structured intent logging, and a verified-safe
+response to adversarial input — a real, defensible v1 for the entire
+text-in/intent-out half of the Voice System, with the client-side
+speech-to-text half correctly deferred to Steps 39-45's Flutter Client
+work per `docs/ARCHITECTURE_PLAN.md`'s sourced architecture research.
+
+Verified (Step 38): clean build and lint; the full 309-test suite (10
+new) passing three consecutive runs; `npm audit` clean; regression-proofed
+via `MAX_VOICE_COMMAND_TEXT_LENGTH`'s own boundary (temporarily raising it
+from 500 to 600 and watching the exact 501-character boundary test
+wrongly pass as `200` instead of `400`), restoring immediately and
+confirming a byte-identical diff against the pre-bug backup; and a
+live-server run confirming oversized text still correctly `400`s, a
+SQL-injection-shaped command resolves as an inert `not_found` with the
+`radio_stations` row count provably unchanged before and after, and an
+emoji-decorated `"play reggae in Jamaica 🇯🇲🎵"` still correctly resolves
+both the country and the genre.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

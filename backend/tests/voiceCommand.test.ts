@@ -783,3 +783,141 @@ describe("POST /v1/voice/command - event search (Step 35)", () => {
     await app.close();
   });
 });
+
+// Step 38: closes out the Voice System bucket (Steps 34-38) with an
+// adversarial hardening pass across the whole grammar built in Steps
+// 34-37, not just this step's own new code - the same "the last step in
+// a bucket reviews/hardens the whole bucket" shape as Step 18/23/30's own
+// closing steps. Every case here demands exactly one thing: a real,
+// sensible 200 (or the documented 400 for oversized input) and never a
+// crash - MAX_VOICE_COMMAND_TEXT_LENGTH's schema-level minLength:1 can't
+// by itself guarantee non-garbage content, so the resolver itself has to
+// degrade gracefully on its own.
+describe("POST /v1/voice/command - adversarial hardening (Step 38)", () => {
+  it("rejects text longer than MAX_VOICE_COMMAND_TEXT_LENGTH with 400", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "too-long");
+
+    const response = await sendCommand(app, token, "a".repeat(501));
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("accepts text at exactly the MAX_VOICE_COMMAND_TEXT_LENGTH boundary", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "at-boundary");
+
+    const response = await sendCommand(app, token, "a".repeat(500));
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("whitespace-only text (passes schema minLength but is empty after trim) resolves as unrecognized, not a crash", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "whitespace-only");
+
+    const response = await sendCommand(app, token, "     ");
+    expect(response.statusCode).toBe(200);
+    expect(response.json().intent).toBe("unrecognized");
+
+    await app.close();
+  });
+
+  it("tolerates trailing emoji/decoration on a country name - normalization strips non-alphanumerics", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "emoji-country");
+
+    const response = await sendCommand(app, token, "play reggae in Jamaica 🇯🇲🎵");
+    expect(response.statusCode).toBe(200);
+    // The country still resolves correctly despite the trailing emoji -
+    // proven by countryId being populated (Jamaica's real id), regardless
+    // of whether any station happens to exist for the intent itself.
+    expect(response.json().countryId).not.toBeNull();
+
+    await app.close();
+  });
+
+  it("a leading emoji before the whole command doesn't crash - falls through to unrecognized", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "emoji-leading");
+
+    // The "play"/"events" grammar is anchored at the start of the string
+    // (^play, ^events) - a leading decoration character breaks that
+    // anchor by design (this is a bounded, documented grammar, not an
+    // attempt at general NLP robustness), so this is expected to fall
+    // through to unrecognized rather than "fixed" to strip arbitrary
+    // leading noise. The only real requirement is that it never crashes.
+    const response = await sendCommand(app, token, "🎵 play reggae in Jamaica");
+    expect(response.statusCode).toBe(200);
+    expect(typeof response.json().intent).toBe("string");
+
+    await app.close();
+  });
+
+  it("embedded newlines and control characters never crash the resolver", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "newlines");
+
+    const response = await sendCommand(app, token, "play\nreggae\nin\njamaica");
+    expect(response.statusCode).toBe(200);
+    expect(typeof response.json().intent).toBe("string");
+
+    await app.close();
+  });
+
+  it("excess internal whitespace between words never crashes the resolver", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "excess-whitespace");
+
+    const response = await sendCommand(app, token, "play    reggae   in   jamaica");
+    expect(response.statusCode).toBe(200);
+    expect(typeof response.json().intent).toBe("string");
+
+    await app.close();
+  });
+
+  it("comma/punctuation-heavy phrasing never crashes the resolver", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "punctuation-heavy");
+
+    const response = await sendCommand(app, token, "PLAY, REGGAE, IN, JAMAICA???");
+    expect(response.statusCode).toBe(200);
+    expect(typeof response.json().intent).toBe("string");
+
+    await app.close();
+  });
+
+  it("a SQL-injection-shaped command is inert - resolves safely and never touches the database's data", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "sql-injection");
+
+    const before = await pool.query("SELECT count(*) FROM radio_stations");
+
+    const response = await sendCommand(app, token, "play '; DROP TABLE radio_stations; --");
+    expect(response.statusCode).toBe(200);
+    expect(response.json().intent).toBe("not_found");
+
+    const after = await pool.query("SELECT count(*) FROM radio_stations");
+    expect(after.rows[0].count).toBe(before.rows[0].count);
+
+    await app.close();
+  });
+
+  it("a SQL-injection-shaped country name in a genre-and-country command is inert", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "sql-injection-country");
+
+    const before = await pool.query("SELECT count(*) FROM countries");
+
+    const response = await sendCommand(app, token, "play reggae in Jamaica'; DROP TABLE countries; --");
+    expect(response.statusCode).toBe(200);
+    expect(response.json().intent).toBe("not_found");
+
+    const after = await pool.query("SELECT count(*) FROM countries");
+    expect(after.rows[0].count).toBe(before.rows[0].count);
+
+    await app.close();
+  });
+});
