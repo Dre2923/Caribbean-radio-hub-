@@ -462,6 +462,24 @@ describe("POST /v1/voice/command", () => {
 
     await app.close();
   });
+
+  it("rate-limits to 30 requests per minute (Step 36)", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "rate-limit");
+
+    const responses = [];
+    for (let i = 0; i < 31; i++) {
+      responses.push(await sendCommand(app, token, "pause"));
+    }
+    const statusCodes = responses.map((r) => r.statusCode);
+    // The first 30 succeed; the 31st is the one this limit exists to
+    // catch. Checking every code (not just the last one) proves the limit
+    // doesn't kick in early and reject a request it shouldn't.
+    expect(statusCodes.slice(0, 30).every((code) => code === 200)).toBe(true);
+    expect(statusCodes[30]).toBe(429);
+
+    await app.close();
+  });
 });
 
 describe("POST /v1/voice/command - event search (Step 35)", () => {

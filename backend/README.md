@@ -1462,6 +1462,24 @@ result out.
   `countryId` (the same field `PATCH /v1/me` already exposes), which
   requires knowing who's asking. A command that already names a country
   ("play reggae in Jamaica") doesn't need this at all.
+- **Rate-limited to 30/min (Step 36)** — tighter than the API's global
+  100/min (`app.ts`). This is the most database-query-heavy single
+  endpoint in the API (up to four real queries per call: countries,
+  genres/categories, the station/event search itself, then the ranking or
+  listing query), and unlike a login/registration attempt there's no
+  inherent cap on how many distinct phrases an abusive script could throw
+  at it. 30/min is still generous for genuine conversational use (one
+  command every two seconds).
+- **Every resolved command is logged with its `intent` (never the raw
+  transcribed `text`) via `request.log.info` (Step 36)** — a real,
+  endpoint-specific observability gap this route's own design otherwise
+  creates: it deliberately never returns a non-`2xx` status for a command
+  it merely failed to understand (`not_found`/`ambiguous`/`unrecognized`
+  are all `200`s), so the standard HTTP access log's status code can
+  never surface a command-grammar coverage problem the way it would for
+  almost every other endpoint in this API. The raw `text` is deliberately
+  never logged by default — it's user-generated speech content, not
+  something to casually persist.
 - **Never fails on unrecognized input.** Every call returns `200` with a
   `message`-carrying `intent` (`not_found`/`ambiguous`/`unrecognized`)
   instead of a `4xx` — genuinely malformed/garbled speech-to-text output
@@ -1570,6 +1588,19 @@ OS-reused ephemeral port on `radio_stations`' `UNIQUE(stream_url)`
 constraint - fixed with the same `createdStationIds` + `afterEach`
 pattern already established everywhere else in this suite, after
 deleting the accumulated backlog.
+
+Verified (Step 36): clean build and lint; the full 297-test suite (1 new
+- a real 31-request loop against a real app instance confirming the
+first 30 succeed and the 31st is `429`, not just that the config value is
+set) passing three consecutive runs; `npm audit` clean; proven to
+actually catch a real bug by temporarily raising the configured limit
+from 30 to 31 and watching the exact same test wrongly pass all 31
+requests as `200` before restoring and confirming a byte-identical diff
+against the pre-bug backup; and a live-server run sending 32 real
+requests in a loop and confirming exactly the first 30 return `200` and
+the last 2 return `429`, plus tailing the live server's own log output to
+confirm a real request actually produces an `intent`-carrying,
+`reqId`-correlated `"voice command resolved"` log line.
 
 ## Security baseline
 

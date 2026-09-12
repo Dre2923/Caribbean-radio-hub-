@@ -23,6 +23,18 @@ async function voiceCommandHandler(
   const result = await resolveVoiceCommand(request.body.text, {
     defaultCountryId: user?.countryId ?? null,
   });
+  // This endpoint deliberately never returns a non-2xx status for a
+  // command it merely failed to understand (not_found/ambiguous/
+  // unrecognized are all 200s - see this route's own description below),
+  // so the standard HTTP access log's status code can never surface a
+  // command-grammar coverage gap the way it would for almost every other
+  // endpoint in this API. Logging the resolved `intent` explicitly (never
+  // the raw transcribed `text` - that's user-generated speech content,
+  // not something to casually persist into logs by default) is what
+  // actually makes "what fraction of real commands go unrecognized"
+  // observable at all, through the same shared, request-id-correlated
+  // Pino logger every other request already flows through (Step 04).
+  request.log.info({ intent: result.intent }, "voice command resolved");
   return reply.send(result);
 }
 
@@ -35,6 +47,21 @@ export async function voiceRoutes(app: FastifyInstance): Promise<void> {
       // command to "my country" requires knowing who's asking, the same
       // reasoning GET /v1/me itself is auth-gated for.
       preHandler: [app.authenticate],
+      // Tighter than the API's global 100/min (app.ts): the resolver behind
+      // this route can run up to four real database queries per call
+      // (countries, genres/categories, station/event search, then the
+      // ranking or listing query itself) - the most query-heavy single
+      // endpoint in this API - and, unlike a login/registration attempt,
+      // there's no inherent cap on how many distinct phrases an abusive
+      // script could throw at it. 30/min is still generous for genuine
+      // conversational use (one command every two seconds) while blunting
+      // that amplification.
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "1 minute",
+        },
+      },
       schema: {
         description:
           "Resolves a transcribed voice command into a structured intent. The client " +
