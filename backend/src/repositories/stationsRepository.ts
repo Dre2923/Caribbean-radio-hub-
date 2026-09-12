@@ -227,10 +227,13 @@ export interface StationListFilter {
   // the order of dozens to a few hundred stations, not the kind of corpus
   // that would justify tsvector's added complexity.
   search?: string;
-  // Defaults to true (the public catalog never surfaces a curated-off
-  // station); an admin-facing caller passes false explicitly to see
-  // everything, e.g. while deciding what to re-activate.
-  activeOnly?: boolean;
+  // Tri-state, not a plain boolean default: undefined means no filter at
+  // all (every station regardless of curation state - what the admin
+  // listing needs to show everything), true/false filters to exactly
+  // that state. The public route (src/routes/stations.ts) always passes
+  // true explicitly and never lets a client override it; the admin route
+  // exposes this as a real, client-controlled filter.
+  isActive?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -248,8 +251,9 @@ export async function listStations(filter: StationListFilter = {}): Promise<Stat
     values.push(filter.countryId);
     conditions.push(`s.country_id = $${values.length}`);
   }
-  if (filter.activeOnly !== false) {
-    conditions.push("s.is_active = true");
+  if (filter.isActive !== undefined) {
+    values.push(filter.isActive);
+    conditions.push(`s.is_active = $${values.length}`);
   }
   if (filter.genreId !== undefined) {
     values.push(filter.genreId);

@@ -744,3 +744,145 @@ describe("radio station input hygiene", () => {
     await app.close();
   });
 });
+
+describe("GET /v1/admin/stations", () => {
+  it("rejects a missing token and a non-admin token", async () => {
+    const app = buildApp();
+    const regularToken = await createRegularToken(app, "admin-list-authcheck");
+
+    const noToken = await app.inject({ method: "GET", url: "/v1/admin/stations" });
+    expect(noToken.statusCode).toBe(401);
+
+    const nonAdmin = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations",
+      headers: { authorization: `Bearer ${regularToken}` },
+    });
+    expect(nonAdmin.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("sees an inactive station that the public endpoint hides, and can filter by isActive", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-list-visibility");
+    const marker = `AdminList${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: `${marker} Station`, streamUrl: uniqueStreamUrl("admin-list") },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: false },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    // Confirms the gap this route closes: the public endpoint can never
+    // see this station once it's inactive...
+    const publicList = await app.inject({ method: "GET", url: `/v1/stations?q=${marker}` });
+    expect(publicList.json().stations).toEqual([]);
+
+    // ...but the admin listing does, with no isActive filter at all.
+    const adminListAll = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations?q=${marker}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(adminListAll.statusCode).toBe(200);
+    const allIds = (adminListAll.json().stations as Array<{ id: number }>).map((s) => s.id);
+    expect(allIds).toEqual([stationId]);
+
+    // isActive=true excludes it...
+    const adminListActive = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations?q=${marker}&isActive=true`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(adminListActive.json().stations).toEqual([]);
+
+    // ...and isActive=false finds exactly it.
+    const adminListInactive = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations?q=${marker}&isActive=false`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const inactiveIds = (adminListInactive.json().stations as Array<{ id: number }>).map(
+      (s) => s.id,
+    );
+    expect(inactiveIds).toEqual([stationId]);
+
+    await app.close();
+  });
+
+  it("supports the same genre/language/country filters and pagination as the public route", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "admin-list-filters");
+    const [genreId] = await getRealGenreIds(app, 1);
+    const marker = `AdminFilter${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: {
+        countryId,
+        name: `${marker} Station`,
+        streamUrl: uniqueStreamUrl("admin-list-filters"),
+        genreIds: [genreId],
+      },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const filtered = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations?countryId=${countryId}&genreId=${genreId}&q=${marker}&limit=10&offset=0`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(filtered.statusCode).toBe(200);
+    expect((filtered.json().stations as Array<{ id: number }>).map((s) => s.id)).toEqual([
+      stationId,
+    ]);
+    expect(filtered.json().pagination).toEqual({ total: 1, limit: 10, offset: 0 });
+
+    await app.close();
+  });
+
+  it("silently strips an unknown query field rather than rejecting the request", async () => {
+    // Same removeAdditional: true behavior already documented for body
+    // fields (POST /v1/users, POST /v1/stations) - AJV's compiler option
+    // applies uniformly across body/querystring/params, not just bodies.
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "admin-list-validation");
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations?bogus=1",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("rejects a non-boolean isActive query param", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "admin-list-isactive-validation");
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/admin/stations?isActive=not-a-boolean",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

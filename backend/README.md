@@ -127,6 +127,13 @@ is still calling it.
   deletes the station (and its genre/language associations, which cascade)
   and its history — prefer `PATCH { isActive: false }` for routine
   curation. `404` for an unknown id.
+- `GET /v1/admin/stations` — requires an admin account. Same filters as
+  `GET /v1/stations` (`countryId`/`genreId`/`languageId`/`q`, paginated),
+  plus `isActive` — omit it to see every station regardless of curation
+  state (the whole point of this route), or set it to see only active or
+  only inactive ones. This is the only way to see a curated-off station
+  through the API at all; the public route can never be coaxed into
+  showing one.
 - `GET /v1/genres` — lists the genres a station can be tagged with. Public,
   no auth.
 - `GET /v1/languages` — lists the languages a station can be tagged with.
@@ -316,9 +323,16 @@ or rebroadcasts the audio itself, so there's deliberately no audio-storage
 column here at all.
 
 - **Public reads, admin-gated writes.** `GET /v1/stations` and
-  `GET /v1/stations/:id` need no auth. `POST`/`PATCH`/`DELETE` require
-  `[app.authenticate, app.requireAdmin]` (see "Authorization" above) — the
-  catalog is curated, not user-editable.
+  `GET /v1/stations/:id` need no auth. `POST`/`PATCH`/`DELETE` and
+  `GET /v1/admin/stations` require `[app.authenticate, app.requireAdmin]`
+  (see "Authorization" above) — the catalog is curated, not user-editable.
+- **Full curation visibility is a structurally separate route, not a query
+  param on the public one.** `GET /v1/admin/stations` (Step 15) is the
+  only place an inactive/curated-off station is visible through the API
+  at all — closing a real gap the public route's own design deliberately
+  left open (its `isActive` filter is always `true` and never
+  client-controlled, so there was previously no way for even an admin to
+  browse what had been curated off, other than a direct database query).
 - **HTTPS-only stream and website URLs**, enforced by JSON Schema
   (`pattern: "^https://"`, not just `format: "uri"`, which checks general
   URI structure but not scheme) — the same HTTPS-end-to-end standard the
@@ -444,6 +458,35 @@ matches nothing, proving `AND` semantics rather than `OR`); and a full
 `pagination.total` throughout. `tests/stations.validation.test.ts` covers
 every rejected shape: non-integer `genreId`/`languageId`, `limit` of `0`,
 negative, or over 100, a negative `offset`, and an empty or over-length `q`.
+
+### Admin station listing (Step 15)
+
+`listStations`'s filter gained a genuine tri-state `isActive` (undefined =
+no filter at all, `true`/`false` = exactly that state) in place of the
+previous plain `activeOnly` boolean, which could only ever mean "active
+only" or "no filter" — there was no way to ask for *only* the inactive
+ones. `GET /v1/stations` still always passes `true` explicitly and never
+lets a client override it; `GET /v1/admin/stations` (admin-only) is what
+exposes the real filter, alongside the same `countryId`/`genreId`/
+`languageId`/`q`/pagination support as the public route.
+
+This closes a real, previously-flagged gap, not a hypothetical one: before
+this route existed, an admin who deactivated a station (or wanted to
+review what had been curated off, or find a station that mysteriously
+stopped appearing publicly) had no way to do it through the API at all —
+only a direct database query would show an inactive row. `is_active` is
+also now bound as a real query parameter in the underlying SQL rather than
+a hardcoded `true` literal string, closing that small inconsistency with
+every other filter in the same query.
+
+Verified end-to-end against a real database in `tests/stations.test.ts`:
+`401`/`403` for a missing/non-admin token; a station deactivated via
+`PATCH` confirmed invisible on the public route but visible (and correctly
+found/excluded by `isActive=true`/`isActive=false`) on the admin route; the
+same `countryId`/`genreId`/`q`/pagination filters working identically to
+the public route; and the same unknown-field-stripped-not-rejected
+behavior already established elsewhere, verified here too rather than
+assumed to carry over.
 
 ## Security baseline
 

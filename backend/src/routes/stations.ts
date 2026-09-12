@@ -39,17 +39,53 @@ interface ListStationsQuery {
 
 async function listStationsHandler(request: FastifyRequest<{ Querystring: ListStationsQuery }>) {
   const { countryId, genreId, languageId, q, limit, offset } = request.query;
-  // Always active-only: this is the public catalog listing, never a place
-  // a curated-off (Step 17) or not-yet-approved station should appear.
-  // Admin tooling that needs to see everything queries the repository
-  // directly (or gets its own route) rather than this one growing a mode
-  // switch.
+  // Always active-only, and never client-controlled: this is the public
+  // catalog listing, never a place a curated-off (Step 17) or
+  // not-yet-approved station should appear. GET /v1/admin/stations (below)
+  // is the admin-only route with full visibility.
   const { stations, total } = await listStations({
     countryId,
     genreId,
     languageId,
     search: q,
-    activeOnly: true,
+    isActive: true,
+    limit,
+    offset,
+  });
+  return {
+    stations,
+    pagination: {
+      total,
+      limit: limit ?? DEFAULT_STATION_LIST_LIMIT,
+      offset: offset ?? 0,
+    },
+  };
+}
+
+interface AdminListStationsQuery {
+  countryId?: number;
+  genreId?: number;
+  languageId?: number;
+  q?: string;
+  isActive?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+async function listAdminStationsHandler(
+  request: FastifyRequest<{ Querystring: AdminListStationsQuery }>,
+) {
+  const { countryId, genreId, languageId, q, isActive, limit, offset } = request.query;
+  // isActive is undefined unless the caller explicitly filters - showing
+  // every station regardless of curation state is the entire point of
+  // this route existing (deciding what to re-activate, auditing what's
+  // been curated off, finding a station that isn't showing up publicly).
+  const { stations, total } = await listStations({
+    countryId,
+    genreId,
+    languageId,
+    search: q,
+    isActive,
     limit,
     offset,
   });
@@ -240,6 +276,66 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     listStationsHandler,
+  );
+
+  app.get<{ Querystring: AdminListStationsQuery }>(
+    "/admin/stations",
+    {
+      // Admin-only - this is the one place the catalog's full, unfiltered
+      // curation state (every inactive/curated-off station included) is
+      // visible at all. The public route above can never be coaxed into
+      // this by a query param; this is a structurally separate route.
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description:
+          "Lists radio stations with full visibility (including inactive/curated-off " +
+          "ones) for admin curation. Requires an admin account. Same filters as " +
+          "GET /v1/stations, plus isActive to filter to exactly active or inactive - " +
+          "omit isActive to see everything regardless of curation state.",
+        tags: ["stations"],
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            countryId: { type: "integer", minimum: 1 },
+            genreId: { type: "integer", minimum: 1 },
+            languageId: { type: "integer", minimum: 1 },
+            q: { type: "string", minLength: 1, maxLength: MAX_STATION_SEARCH_LENGTH },
+            isActive: { type: "boolean" },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: MAX_STATION_LIST_LIMIT,
+              default: DEFAULT_STATION_LIST_LIMIT,
+            },
+            offset: { type: "integer", minimum: 0, default: 0 },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              stations: { type: "array", items: stationSchema },
+              pagination: {
+                type: "object",
+                properties: {
+                  total: { type: "integer" },
+                  limit: { type: "integer" },
+                  offset: { type: "integer" },
+                },
+                required: ["total", "limit", "offset"],
+              },
+            },
+            required: ["stations", "pagination"],
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+        },
+      },
+    },
+    listAdminStationsHandler,
   );
 
   app.get<{ Params: { id: number } }>(
