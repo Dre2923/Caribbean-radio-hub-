@@ -4,6 +4,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { LoginPage } from "./pages/LoginPage";
 import { UsersPage } from "./pages/UsersPage";
+import { StationsPage } from "./pages/StationsPage";
 
 export function App() {
   return (
@@ -13,8 +14,9 @@ export function App() {
         <Route element={<RequireAuth />}>
           <Route element={<DashboardLayout />}>
             <Route path="/users" element={<UsersPage />} />
-            {/* Station moderation (Step 32) and Event moderation (Step 33)
-                add their own routes here as they're built. */}
+            <Route path="/stations" element={<StationsPage />} />
+            {/* Event moderation (Step 33) adds its own route here as it's
+                built. */}
             <Route path="/" element={<Navigate to="/users" replace />} />
           </Route>
         </Route>

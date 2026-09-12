@@ -1,11 +1,11 @@
 # Caribbean Radio Hub — Admin Dashboard
 
-An internal web console for platform admins: manage user accounts today
-(Step 31), radio station and event moderation follow in Steps 32-33. Built
-as its own project (sibling to `backend/`), consuming only the backend's
-existing `/v1/admin/*` API — it has no server of its own and no database
-access; every action goes through the same admin-gated endpoints
-documented in `backend/README.md`.
+An internal web console for platform admins: user account management
+(Step 31) and radio station moderation (Step 32) are built; event
+moderation follows in Step 33. Built as its own project (sibling to
+`backend/`), consuming only the backend's existing `/v1/admin/*` API — it
+has no server of its own and no database access; every action goes
+through the same admin-gated endpoints documented in `backend/README.md`.
 
 ## Stack
 
@@ -18,7 +18,7 @@ documented in `backend/README.md`.
   system chosen over hand-rolled CSS or a heavier component library for
   the same "move fast, stay consistent" reasoning as the framework choice.
 - **react-router-dom v7** for client-side routing (`/login`, the
-  authenticated `/users` shell, more views as Steps 32-33 land).
+  authenticated `/users` and `/stations` views, more as Step 33 lands).
 - **@tanstack/react-query v5** for server-state (fetching, caching,
   invalidation, mutations) — the current standard for exactly this job
   rather than hand-rolled `useState`/`useEffect` data fetching, which
@@ -87,6 +87,17 @@ server-side.
   clear `409` — the dashboard surfaces that message rather than special-
   casing it client-side, since the backend's `LastAdminError` check is the
   actual source of truth.
+- **`/stations`** (Step 32) — search (`q=`, matches name) plus
+  country/genre/language filters (populated from the public
+  `GET /v1/countries`/`/genres`/`/languages` lookups) and an active/
+  inactive/all toggle, paginated. Deactivate (with an optional reason,
+  entered in the same confirmation dialog rather than a second step),
+  Reactivate, and a separately red-styled Delete action per row — mirroring
+  the backend's own "prefer deactivate for routine curation, delete is for
+  a genuine mistake" guidance (see `backend/README.md`'s "Radio Master
+  Catalog"). An inactive station's row shows its deactivation reason and
+  timestamp inline, so a moderator never has to open a detail view just to
+  see why something was pulled.
 
 ## Verification
 
@@ -95,13 +106,19 @@ Every change to this project has been verified with: a clean
 `react-hooks`'s rules catch real bugs like a stale closure over state
 inside an effect, not just style nits), `npm audit`, and a live,
 real-browser walkthrough (Playwright against Chromium, driving a real
-running backend + dashboard dev server together) covering: an
+running backend + dashboard dev server together). For `/users`: an
 unauthenticated visit redirecting to `/login`, a wrong password showing
 the backend's generic anti-enumeration message, a valid non-admin account
 being turned away, a real admin logging in and reaching `/users`,
 search narrowing results, promoting and demoting a real account (with the
 role-change audit trail visibly updating), the role filter's empty state,
-and sign-out correctly revoking dashboard access.
+and sign-out correctly revoking dashboard access. For `/stations`: search
+and each filter (genre, active/inactive) narrowing to the exact expected
+rows against real seeded/created stations, deactivating with a reason and
+seeing that reason rendered in the row, reactivating and watching it
+correctly disappear from the inactive-only filter, and deleting for real
+(confirmed against the database afterward, not just the UI no longer
+showing it).
 
 ## CI
 

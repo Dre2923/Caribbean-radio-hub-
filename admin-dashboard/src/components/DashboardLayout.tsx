@@ -1,11 +1,13 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 
-// Only "Users" exists as of Step 31 - Station moderation (Step 32) and
-// Event moderation (Step 33) add their own entries here as they're built,
-// the same incremental-bucket shape as every other multi-step bucket in
+// Event moderation (Step 33) adds its own entry here as it's built, the
+// same incremental-bucket shape as every other multi-step bucket in
 // docs/BUILD_MANIFEST.md.
-const NAV_ITEMS = [{ to: "/users", label: "Users" }];
+const NAV_ITEMS = [
+  { to: "/users", label: "Users" },
+  { to: "/stations", label: "Stations" },
+];
 
 export function DashboardLayout() {
   const { user, logout } = useAuth();

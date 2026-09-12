@@ -9,6 +9,12 @@ interface ConfirmDialogProps {
   pending?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  // Optional extra form content between the description and the action
+  // buttons - e.g. a deactivation-reason textarea. Kept generic here
+  // rather than a one-off "reason" prop so this same dialog serves every
+  // confirm-with-optional-detail action across the dashboard (station
+  // deactivation today, event rejection in Step 33).
+  children?: ReactNode;
 }
 
 // A real in-app modal rather than the browser's native confirm() - a
@@ -24,6 +30,7 @@ export function ConfirmDialog({
   pending = false,
   onConfirm,
   onCancel,
+  children,
 }: ConfirmDialogProps) {
   if (!open) return null;
 
@@ -39,6 +46,7 @@ export function ConfirmDialog({
           {title}
         </h2>
         <div className="mt-2 text-sm text-slate-600">{description}</div>
+        {children && <div className="mt-4">{children}</div>}
         <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
