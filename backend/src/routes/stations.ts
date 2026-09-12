@@ -120,6 +120,7 @@ interface TrimmableStationFields {
   description?: string;
   streamUrl?: string;
   websiteUrl?: string;
+  deactivationReason?: string;
 }
 
 // Trims every free-text field a station body can carry - the same input
@@ -131,7 +132,13 @@ interface TrimmableStationFields {
 // formatting a human wouldn't even notice they'd introduced.
 function trimStationBodyStrings(body: Partial<TrimmableStationFields> | undefined): void {
   if (!body) return;
-  for (const field of ["name", "description", "streamUrl", "websiteUrl"] as const) {
+  for (const field of [
+    "name",
+    "description",
+    "streamUrl",
+    "websiteUrl",
+    "deactivationReason",
+  ] as const) {
     const value = body[field];
     if (typeof value === "string") {
       body[field] = value.trim();
@@ -188,6 +195,7 @@ interface UpdateStationBody {
   websiteUrl?: string;
   description?: string;
   isActive?: boolean;
+  deactivationReason?: string;
   genreIds?: number[];
   languageIds?: number[];
 }
@@ -196,8 +204,14 @@ async function updateStationHandler(
   request: FastifyRequest<{ Params: { id: number }; Body: UpdateStationBody }>,
   reply: FastifyReply,
 ) {
+  if (request.body.deactivationReason !== undefined && request.body.isActive !== false) {
+    return badRequest(
+      reply,
+      "deactivationReason is only valid together with isActive: false in the same request",
+    );
+  }
   try {
-    const station = await updateStation(request.params.id, request.body);
+    const station = await updateStation(request.params.id, request.body, request.user.sub);
     if (!station) {
       return stationNotFound(reply);
     }
@@ -410,8 +424,11 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
         description:
           "Updates a radio station. Requires an admin account. All fields optional; only " +
           "the fields present are changed. Setting isActive: false pulls it from the " +
-          "public catalog without deleting its history. genreIds/languageIds, if " +
-          "present, replace the station's full set of each - omit them to leave " +
+          "public catalog without deleting its history, and may include an optional " +
+          "deactivationReason (only valid together with isActive: false) - the acting " +
+          "admin and a timestamp are recorded automatically either way. Reactivating " +
+          "(isActive: true) clears any prior deactivation record. genreIds/languageIds, " +
+          "if present, replace the station's full set of each - omit them to leave " +
           "existing associations untouched, or send [] to clear them.",
         tags: ["stations"],
         security: [{ bearerAuth: [] }],

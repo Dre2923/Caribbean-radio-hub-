@@ -11,7 +11,10 @@ async function getRealCountryId(app: ReturnType<typeof buildApp>): Promise<numbe
   return country.id;
 }
 
-async function createAdminToken(app: ReturnType<typeof buildApp>, label: string): Promise<string> {
+async function createAdminAccount(
+  app: ReturnType<typeof buildApp>,
+  label: string,
+): Promise<{ token: string; userId: number }> {
   const email = `stations-admin-${label}-${Date.now()}@example.com`;
   const password = "stations-admin-password-123";
   const register = await app.inject({
@@ -23,7 +26,11 @@ async function createAdminToken(app: ReturnType<typeof buildApp>, label: string)
   await setUserRole(userId, "admin");
 
   const login = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email, password } });
-  return login.json().token as string;
+  return { token: login.json().token as string, userId };
+}
+
+async function createAdminToken(app: ReturnType<typeof buildApp>, label: string): Promise<string> {
+  return (await createAdminAccount(app, label)).token;
 }
 
 async function createRegularToken(app: ReturnType<typeof buildApp>, label: string): Promise<string> {
@@ -1036,6 +1043,187 @@ describe("radio station data quality - near-duplicate stream URLs (Step 16)", ()
     });
     expect(patch.statusCode).toBe(200);
     expect(patch.json().station.streamUrl).toBe(streamUrl);
+
+    await app.close();
+  });
+});
+
+describe("radio station curation - deactivation audit trail (Step 17)", () => {
+  it("records the acting admin and a timestamp when deactivating, and clears them on reactivation", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const { token: adminToken, userId: adminUserId } = await createAdminAccount(app, "audit-trail");
+    const streamUrl = uniqueStreamUrl("audit-trail");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Audit Trail Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+    // Never deactivated yet - all three audit fields start null.
+    expect(create.json().station.deactivatedAt).toBeNull();
+    expect(create.json().station.deactivatedByUserId).toBeNull();
+    expect(create.json().station.deactivationReason).toBeNull();
+
+    const deactivate = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: false, deactivationReason: "Stream has been dead for a week" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deactivate.statusCode).toBe(200);
+    const deactivated = deactivate.json().station;
+    expect(deactivated.isActive).toBe(false);
+    expect(deactivated.deactivatedByUserId).toBe(adminUserId);
+    expect(deactivated.deactivationReason).toBe("Stream has been dead for a week");
+    expect(new Date(deactivated.deactivatedAt).getTime()).not.toBeNaN();
+
+    const reactivate = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: true },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(reactivate.statusCode).toBe(200);
+    const reactivated = reactivate.json().station;
+    expect(reactivated.isActive).toBe(true);
+    // Reactivating clears the prior deactivation record - the reason it
+    // was inactive no longer applies once it's active again.
+    expect(reactivated.deactivatedAt).toBeNull();
+    expect(reactivated.deactivatedByUserId).toBeNull();
+    expect(reactivated.deactivationReason).toBeNull();
+
+    await app.close();
+  });
+
+  it("records deactivation without a reason when none is given", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const { token: adminToken, userId: adminUserId } = await createAdminAccount(app, "audit-no-reason");
+    const streamUrl = uniqueStreamUrl("audit-no-reason");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "No Reason Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const deactivate = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: false },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deactivate.statusCode).toBe(200);
+    expect(deactivate.json().station.deactivatedByUserId).toBe(adminUserId);
+    expect(deactivate.json().station.deactivationReason).toBeNull();
+    expect(deactivate.json().station.deactivatedAt).not.toBeNull();
+
+    await app.close();
+  });
+
+  it("rejects deactivationReason sent without isActive: false", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "audit-reason-without-deactivate");
+    const streamUrl = uniqueStreamUrl("audit-reason-without-deactivate");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Reason Without Deactivate", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    // No isActive at all.
+    const withoutIsActive = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { deactivationReason: "Should not be accepted" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(withoutIsActive.statusCode).toBe(400);
+
+    // isActive explicitly true.
+    const withActiveTrue = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: true, deactivationReason: "Should not be accepted either" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(withActiveTrue.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("trims a deactivationReason's incidental whitespace like every other free-text field", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const adminToken = await createAdminToken(app, "audit-trim");
+    const streamUrl = uniqueStreamUrl("audit-trim");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Trim Reason Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    const deactivate = await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: false, deactivationReason: "  Duplicate of station #123  " },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deactivate.statusCode).toBe(200);
+    expect(deactivate.json().station.deactivationReason).toBe("Duplicate of station #123");
+
+    await app.close();
+  });
+
+  it("shows the audit trail on the admin listing route for a curated-off station", async () => {
+    const app = buildApp();
+    const countryId = await getRealCountryId(app);
+    const { token: adminToken, userId: adminUserId } = await createAdminAccount(app, "audit-admin-list");
+    const streamUrl = uniqueStreamUrl("audit-admin-list");
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/v1/stations",
+      payload: { countryId, name: "Admin List Audit Station", streamUrl },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const stationId = create.json().station.id as number;
+
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/stations/${stationId}`,
+      payload: { isActive: false, deactivationReason: "Rights issue - pending review" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const adminList = await app.inject({
+      method: "GET",
+      url: `/v1/admin/stations?countryId=${countryId}&isActive=false`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(adminList.statusCode).toBe(200);
+    const found = (
+      adminList.json().stations as Array<{
+        id: number;
+        deactivatedByUserId: number;
+        deactivationReason: string;
+      }>
+    ).find((s) => s.id === stationId);
+    expect(found).toBeDefined();
+    expect(found?.deactivatedByUserId).toBe(adminUserId);
+    expect(found?.deactivationReason).toBe("Rights issue - pending review");
 
     await app.close();
   });

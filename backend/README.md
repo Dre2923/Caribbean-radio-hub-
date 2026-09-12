@@ -540,6 +540,54 @@ watched the three new near-duplicate tests fail with the exact wrong status
 code (`201`/`200` instead of `409`), then restored the fix and watched the
 full 139-test suite pass three consecutive runs; `npm audit` clean.
 
+### Curation: deactivation audit trail (Step 17)
+
+`is_active` (Step 12) already let an admin pull a station from the public
+catalog without deleting it, but recorded nothing about *why* or *by
+whom*. Reviewing a deactivated station months later — or once Steps 19–23's
+automated stream-reliability monitoring starts deactivating stations on its
+own — gave no way to tell "a human decided this was a duplicate" from "the
+stream has been down all week" apart from separately remembering it.
+
+`PATCH /v1/stations/:id` with `isActive: false` now also accepts an
+optional `deactivationReason` (trimmed like every other free-text field)
+and always records `deactivatedAt`/`deactivatedByUserId` automatically —
+the acting admin's id, taken from their own token, never client-suppliable
+independently of actually performing the deactivation. `deactivationReason`
+is rejected with `400` if sent without `isActive: false` in the same
+request — a cross-field rule enforced in the route handler rather than
+JSON Schema, since "field A only valid alongside field B's exact value"
+isn't a plain per-property schema constraint. Reactivating
+(`isActive: true`) clears all three fields — a reason for being inactive
+stops applying once a station is active again, so leaving a stale reason
+behind on reactivation would be actively misleading, not just unused data.
+Migration `1700000010000_radio_stations_deactivation_audit` is a single,
+unsplit `pgm.addColumn` (all three columns nullable, no backfill needed —
+an existing row simply getting `NULL` *is* the correct "never deactivated"
+state), so the deferred-DDL-vs-immediate-`pgm.db.query` hazard documented
+in `docs/BUILD_MANIFEST.md` (hit for Steps 02, 13, and 16) doesn't apply
+here at all.
+
+All three fields are exposed on the shared `stationSchema` response (not a
+separate admin-only shape) — safe to do since the public routes only ever
+return `isActive: true` stations, where these are trivially always `null`;
+the real curation-state visibility already lives structurally behind
+`GET /v1/admin/stations` (Step 15), not behind which fields a schema lists.
+
+Verified: migration up/down/up on dev and test databases; the full
+144-test suite (5 new) passing three consecutive runs; `npm audit` clean;
+proven to actually catch the bug (not pass by construction) by temporarily
+reverting to the pre-Step-17 route/repository/schema code and watching all
+5 new tests fail with the exact wrong values (`undefined` where an actor id
+or reason was expected, `200` where the cross-field rule should reject with
+`400`) before restoring the fix. Covers: actor/timestamp recorded and a
+reason stored on deactivation; deactivation without a reason leaving
+`deactivationReason` `null` rather than some placeholder; reactivation
+clearing all three fields; the `400` for `deactivationReason` sent without
+`isActive: false` (both "omitted entirely" and "explicitly `true`"); the
+same whitespace-trimming guarantee as every other free-text field; and the
+audit trail visible end-to-end through `GET /v1/admin/stations`.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

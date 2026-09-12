@@ -13,6 +13,14 @@ export interface Station {
   websiteUrl: string | null;
   description: string | null;
   isActive: boolean;
+  // Step 17: only ever populated as a side effect of updateStation setting
+  // isActive: false, and cleared again on reactivation - never
+  // independently settable. Always null for a station this API's public
+  // routes can return (they only ever show isActive: true stations), so
+  // exposing these here carries no curation-state leak on that side.
+  deactivatedAt: string | null;
+  deactivatedByUserId: number | null;
+  deactivationReason: string | null;
   genres: Genre[];
   languages: Language[];
   createdAt: string;
@@ -27,6 +35,9 @@ interface StationRow {
   website_url: string | null;
   description: string | null;
   is_active: boolean;
+  deactivated_at: string | null;
+  deactivated_by_user_id: number | null;
+  deactivation_reason: string | null;
   genres: Genre[] | null;
   languages: Language[] | null;
   created_at: string;
@@ -97,7 +108,8 @@ const STREAM_URL_NORMALIZED_CONSTRAINT = "radio_stations_stream_url_normalized_k
 const STATION_SELECT = `
   SELECT
     s.id, s.country_id, s.name, s.stream_url, s.website_url, s.description,
-    s.is_active, s.created_at, s.updated_at,
+    s.is_active, s.deactivated_at, s.deactivated_by_user_id, s.deactivation_reason,
+    s.created_at, s.updated_at,
     COALESCE(
       (SELECT json_agg(json_build_object('id', g.id, 'name', g.name) ORDER BY g.name)
        FROM station_genres sg JOIN genres g ON g.id = sg.genre_id
@@ -134,6 +146,9 @@ function toStation(row: StationRow): Station {
     websiteUrl: row.website_url,
     description: row.description,
     isActive: row.is_active,
+    deactivatedAt: row.deactivated_at,
+    deactivatedByUserId: row.deactivated_by_user_id,
+    deactivationReason: row.deactivation_reason,
     genres: row.genres ?? [],
     languages: row.languages ?? [],
     createdAt: row.created_at,
@@ -326,6 +341,13 @@ export interface StationUpdate {
   websiteUrl?: string | null;
   description?: string | null;
   isActive?: boolean;
+  // Step 17: only meaningful together with isActive: false in the same
+  // update - the route validates that combination before this function is
+  // ever called. Never independently editable, and never carried forward:
+  // reactivating (isActive: true) always clears it along with
+  // deactivatedAt/deactivatedByUserId, regardless of whether this field is
+  // present on that same request.
+  deactivationReason?: string;
   // undefined = leave associations untouched; [] = clear them; a
   // non-empty array = replace them with exactly this set - the same
   // "undefined means don't touch this field" convention as every other
@@ -334,7 +356,16 @@ export interface StationUpdate {
   languageIds?: number[];
 }
 
-export async function updateStation(id: number, updates: StationUpdate): Promise<Station | null> {
+// actorUserId: the admin performing this write - recorded as
+// deactivated_by_user_id only when this call is the one that flips
+// isActive to false. Required unconditionally (not just when deactivating)
+// so every call site provides it consistently, the same reasoning
+// createStation already applies to createdByUserId.
+export async function updateStation(
+  id: number,
+  updates: StationUpdate,
+  actorUserId: number,
+): Promise<Station | null> {
   // Built from only the fields actually present, so a partial update never
   // overwrites a column the caller didn't intend to touch - the same
   // pattern as usersRepository.updateUserProfile.
@@ -366,6 +397,21 @@ export async function updateStation(id: number, updates: StationUpdate): Promise
   if (updates.isActive !== undefined) {
     values.push(updates.isActive);
     setClauses.push(`is_active = $${values.length}`);
+    if (updates.isActive === false) {
+      setClauses.push("deactivated_at = now()");
+      values.push(actorUserId);
+      setClauses.push(`deactivated_by_user_id = $${values.length}`);
+      values.push(updates.deactivationReason ?? null);
+      setClauses.push(`deactivation_reason = $${values.length}`);
+    } else {
+      // Reactivating clears any prior deactivation record - a reason for
+      // being inactive stops applying once the station is active again.
+      setClauses.push(
+        "deactivated_at = NULL",
+        "deactivated_by_user_id = NULL",
+        "deactivation_reason = NULL",
+      );
+    }
   }
 
   const touchesTags = updates.genreIds !== undefined || updates.languageIds !== undefined;
