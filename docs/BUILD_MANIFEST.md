@@ -21,6 +21,14 @@ multiple steps together without an explicit go-ahead each time.
 - Every component: modular, backed up before modification, documented,
   testable, monitored, secure, accessible, responsive, production-ready,
   cross-platform where applicable, free/open-source first.
+- **Every dependency's license stays commercial-safe.** Free/open-source
+  first (above) means permissively-licensed (MIT/Apache-2.0/BSD-style) or
+  genuinely free-to-use — never a copyleft license (GPL/AGPL-style) that
+  would force this codebase itself to be open-sourced, and never a
+  paid/restricted-use license adopted without it being an explicit,
+  deliberate choice. Checked when a dependency is added, not assumed
+  after the fact — `npm audit`/dependency review at each step (already
+  standing practice) is also where this gets confirmed.
 - Every database write requires error handling and rollback protection
   built in from the start.
 

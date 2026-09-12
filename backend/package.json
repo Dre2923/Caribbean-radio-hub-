@@ -2,6 +2,7 @@
   "name": "caribbean-radio-hub-backend",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Foundation backend service for the Caribbean Radio & Events Platform",
   "type": "module",
   "engines": {
