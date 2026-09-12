@@ -154,6 +154,32 @@ is still calling it.
   Computed `uptimePercentage`/`averageLatencyMs` over a recent window
   (`windowHours`, default 24, max 168). See "Stream Reliability" below.
   `404` for an unknown station id.
+- `GET /v1/events` — lists approved events. Public, no auth. Optional
+  `?countryId=` filter. Paginated with `?limit=` (default 50, max 100) and
+  `?offset=`; ordered soonest-first by `startsAt`. See "Events" below.
+- `GET /v1/events/:id` — a single approved event. `404` for an unknown id
+  or a pending/rejected one — the same response either way, the identical
+  no-leaking-moderation-state reasoning as a curated-off station's `404`.
+- `POST /v1/events` — requires authentication (any account, not just
+  admin — see "Events" below). Body:
+  `{ countryId, title, description?, venue?, startsAt, endsAt?, imageUrl?, ticketUrl? }`.
+  `imageUrl`/`ticketUrl` must be HTTPS. The resulting event's `status` is
+  never client-controlled: a regular user's submission starts `pending`
+  (hidden from the public routes above until an admin approves it); an
+  admin's own submission is `approved` immediately. `400` on invalid
+  input, an unknown `countryId`, or `endsAt` not after `startsAt`.
+- `PATCH /v1/events/:id` — requires an admin account. All fields optional.
+  This is also how moderation happens: `{ status: "approved" }` or
+  `{ status: "rejected" }` on a pending submission — the same
+  "curation is just another PATCH-able field" pattern as
+  `radio_stations.isActive`. `404` for an unknown id.
+- `DELETE /v1/events/:id` — requires an admin account. Permanently deletes
+  the event — prefer `PATCH { status: "rejected" }` for routine moderation.
+  `404` for an unknown id.
+- `GET /v1/admin/events` — requires an admin account. The moderation
+  queue: same `?countryId=` filter as `GET /v1/events`, plus `?status=` to
+  narrow to exactly `pending`/`approved`/`rejected` — omit it to see every
+  submission regardless of moderation state.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -929,6 +955,101 @@ live reachability checking (19), automated on a schedule (20), aggregated
 into a comparable reliability score (21), turned into the actual
 per-country fallback-chain ranking (22), and now closing the loop by
 curating off what's confirmed dead (23).
+
+## Events
+
+### Events core and moderation (Step 24)
+
+The first step of the Events Database bucket (Steps 24–30), and the
+foundational table everything else in it builds on — the same shape
+Step 12 played for the Radio Master Catalog.
+
+Events differ from radio stations in the one way that shapes this table
+from the start: **any authenticated user can submit an event**, not just
+an admin. A submission needs a real moderation lifecycle, not just an
+`isActive` on/off switch.
+
+`events` (migration `1700000013000_events`): `country_id` (FK), `title`,
+`description`, `venue`, `starts_at`/`ends_at` (only `starts_at` required —
+a DB `CHECK` enforces `ends_at > starts_at` whenever both are present; a
+`NULL ends_at` always satisfies it), `image_url`/`ticket_url` (HTTPS-only,
+validated at the application layer exactly like `radio_stations.logo_url`/
+`stream_url` — ticket purchase is always an external link, this API never
+handles payment, matching the Project Standard's "connect directly, don't
+intermediate" philosophy), `status` (`pending`/`approved`/`rejected`, DB
+`CHECK`-constrained, defaults to `pending`), and an audit-trail
+`created_by_user_id` (`SET NULL` on the account's deletion, same reasoning
+as `radio_stations.created_by_user_id`).
+
+The moderation lifecycle, end to end:
+
+- `POST /v1/events` requires only authentication — deliberately *not*
+  admin-gated, unlike every other write in the Radio Master Catalog. The
+  resulting `status` is derived server-side from the submitter's role (a
+  fresh `getUserRole` lookup, the same pattern `app.requireAdmin` already
+  uses): a regular user's submission starts `pending`; an admin's own
+  submission is auto-approved immediately (the same trust level every
+  other admin-gated write already has, so an admin never has to
+  self-moderate). A client-supplied `status` field is never trusted
+  either way — `createEventBodySchema`'s `additionalProperties: false`
+  silently strips it before the handler ever sees it (Fastify's
+  `removeAdditional: true`, the same well-established behavior already
+  relied on for `POST /v1/users`).
+- `GET /v1/events`/`GET /v1/events/:id` are public and always restricted
+  to `status: 'approved'` — never client-controlled. An unknown id and a
+  pending/rejected one 404 identically, so the public API never leaks
+  moderation state to anyone probing ids (the same reasoning as a
+  curated-off station's `404`).
+- `PATCH /v1/events/:id` is admin-only, and moderation itself is just
+  `PATCH { status: 'approved' | 'rejected' }` on a pending submission —
+  the identical "curation is just another PATCH-able field" pattern
+  already established for `radio_stations.isActive`, not a dedicated pair
+  of approve/reject endpoints.
+- `DELETE /v1/events/:id` is admin-only, reserved for a genuine mistake
+  or spam — prefer `PATCH { status: 'rejected' }` for routine moderation,
+  which keeps the row (and its history) rather than deleting it.
+- `GET /v1/admin/events` is the moderation queue: full visibility across
+  every status, with an optional `?status=` filter to narrow to exactly
+  one. Folded into this step itself, unlike the equivalent
+  station-admin-listing route (deferred to Step 15) — without it, the
+  moderation loop a regular user's submission depends on would be
+  entirely non-functional, not just incomplete.
+
+`GET /v1/events` orders soonest-first by `startsAt` rather than
+alphabetically like stations — "what's coming up" is what an events
+listing is actually for.
+
+Checked against both standing hazards from the start:
+
+- The migration uses only deferred schema-DSL calls (`createTable`/
+  `addConstraint`/`createIndex`, no `pgm.db.query`), so it isn't subject
+  to the deferred-DDL-vs-immediate-query hazard (see "Database access
+  patterns" below).
+- `GET /v1/events` has no `q=`/search filter to scope a test to just its
+  own rows — the same shape of gap Steps 18/20/22 already hit against the
+  shared, never-truncated local test database. `tests/events.test.ts`
+  reuses Step 22's isolated-country-plus-`afterEach`-hard-deletion
+  pattern, adapted to two *fixed* isolated country indices shared across
+  the whole file (there are only 13 seeded launch countries — not enough
+  for one-per-test across this file's ~20 tests) rather than a fresh one
+  per test. Safe specifically because `afterEach` unconditionally clears
+  every event the file creates before the next test runs, so each test
+  still starts from a genuinely empty slate in both countries regardless
+  of reuse.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 218-test suite (21 new in `tests/events.test.ts`)
+passing three consecutive runs; `npm audit` clean; proven to actually
+catch two real bugs by temporarily (a) hardcoding a submission's status to
+`approved` regardless of the submitter's role and (b) removing the
+pending/rejected check from the public detail route, and watching the
+exact tests that check those behaviors fail with the precise wrong
+status/status-code values before restoring both; and a live-server run
+walking the full moderation loop end-to-end against real HTTP requests —
+a regular user's submission is `404` publicly and hidden from the public
+list, an admin sees it in the moderation queue, `PATCH { status: 'approved' }`
+flips it, and it's then `200`/present in the public list, all against a
+running compiled server rather than only `app.inject()`.
 
 ## Security baseline
 
