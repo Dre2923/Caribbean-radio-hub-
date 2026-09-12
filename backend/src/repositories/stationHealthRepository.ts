@@ -93,30 +93,20 @@ export interface StationReliability {
 
 export const DEFAULT_RELIABILITY_WINDOW_HOURS = 24;
 
-// Step 21: the aggregate signal the per-country quality ranking (Step 22)
-// is actually built on - Step 19/20 only ever produced individual,
-// point-in-time check rows; a ranking needs one comparable number per
-// station, computed from "that day's" history the way
-// docs/BUILD_MANIFEST.md's "Radio Station Quality Ranking" describes it,
-// not a one-time/static ordering.
-export async function getStationReliability(
+interface ReliabilityAggregateRow {
+  total_checks: string;
+  reachable_checks: string;
+  average_latency_ms: string | null;
+}
+
+// Shared by getStationReliability and getRankedStationReliabilityForCountry
+// so the two never quietly drift into computing "uptime percentage" or
+// "average latency" slightly differently from each other.
+function toReliabilitySummary(
   stationId: number,
-  windowHours: number = DEFAULT_RELIABILITY_WINDOW_HOURS,
-): Promise<StationReliability> {
-  const result = await query<{
-    total_checks: string;
-    reachable_checks: string;
-    average_latency_ms: string | null;
-  }>(
-    `SELECT
-       COUNT(*) AS total_checks,
-       COUNT(*) FILTER (WHERE is_reachable) AS reachable_checks,
-       AVG(latency_ms) FILTER (WHERE is_reachable) AS average_latency_ms
-     FROM station_health_checks
-     WHERE station_id = $1 AND checked_at >= now() - make_interval(hours => $2)`,
-    [stationId, windowHours],
-  );
-  const row = result.rows[0];
+  windowHours: number,
+  row: ReliabilityAggregateRow,
+): StationReliability {
   const totalChecks = Number(row.total_checks);
   const reachableChecks = Number(row.reachable_checks);
   return {
@@ -128,4 +118,64 @@ export async function getStationReliability(
     averageLatencyMs:
       row.average_latency_ms !== null ? Math.round(Number(row.average_latency_ms)) : null,
   };
+}
+
+// Step 21: the aggregate signal the per-country quality ranking (Step 22)
+// is actually built on - Step 19/20 only ever produced individual,
+// point-in-time check rows; a ranking needs one comparable number per
+// station, computed from "that day's" history the way
+// docs/BUILD_MANIFEST.md's "Radio Station Quality Ranking" describes it,
+// not a one-time/static ordering.
+export async function getStationReliability(
+  stationId: number,
+  windowHours: number = DEFAULT_RELIABILITY_WINDOW_HOURS,
+): Promise<StationReliability> {
+  const result = await query<ReliabilityAggregateRow>(
+    `SELECT
+       COUNT(*) AS total_checks,
+       COUNT(*) FILTER (WHERE is_reachable) AS reachable_checks,
+       AVG(latency_ms) FILTER (WHERE is_reachable) AS average_latency_ms
+     FROM station_health_checks
+     WHERE station_id = $1 AND checked_at >= now() - make_interval(hours => $2)`,
+    [stationId, windowHours],
+  );
+  return toReliabilitySummary(stationId, windowHours, result.rows[0]);
+}
+
+// Step 22: the same aggregation as getStationReliability, but computed for
+// every active station in a country in one query and already ordered by
+// the ranking rule the per-country quality ranking needs: known
+// reliability (real checks exist) beats unknown, highest uptime first,
+// lower average latency breaks a tie, station name breaks any remaining
+// tie for full determinism. Deliberately conservative about unknown
+// stations - a station with zero recorded checks could be broken (a typo
+// in its streamUrl, wrong port, anything Step 20's sweep just hasn't
+// caught yet) just as easily as it could be fine, so it's ranked *after*
+// every station this system has actually verified, even one with a
+// mediocre-but-real track record - trusting measured evidence over no
+// evidence at all, not assuming the best of an unverified stream.
+export async function getRankedStationReliabilityForCountry(
+  countryId: number,
+  windowHours: number = DEFAULT_RELIABILITY_WINDOW_HOURS,
+): Promise<StationReliability[]> {
+  const result = await query<{ id: number } & ReliabilityAggregateRow>(
+    `SELECT
+       s.id,
+       COUNT(hc.id) AS total_checks,
+       COUNT(hc.id) FILTER (WHERE hc.is_reachable) AS reachable_checks,
+       AVG(hc.latency_ms) FILTER (WHERE hc.is_reachable) AS average_latency_ms
+     FROM radio_stations s
+     LEFT JOIN station_health_checks hc
+       ON hc.station_id = s.id AND hc.checked_at >= now() - make_interval(hours => $2)
+     WHERE s.country_id = $1 AND s.is_active = true
+     GROUP BY s.id
+     ORDER BY
+       (CASE WHEN COUNT(hc.id) > 0
+             THEN COUNT(hc.id) FILTER (WHERE hc.is_reachable)::float8 / COUNT(hc.id)
+             ELSE NULL END) DESC NULLS LAST,
+       AVG(hc.latency_ms) FILTER (WHERE hc.is_reachable) ASC NULLS LAST,
+       s.name ASC`,
+    [countryId, windowHours],
+  );
+  return result.rows.map((row) => toReliabilitySummary(row.id, windowHours, row));
 }

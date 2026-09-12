@@ -11,6 +11,7 @@ import { authRoutes } from "./routes/auth.js";
 import { meRoutes } from "./routes/me.js";
 import { stationsRoutes } from "./routes/stations.js";
 import { stationHealthRoutes } from "./routes/stationHealth.js";
+import { stationRankingRoutes } from "./routes/stationRanking.js";
 import { genresRoutes } from "./routes/genres.js";
 import { languagesRoutes } from "./routes/languages.js";
 import { pinoLogger } from "./utils/logger.js";
@@ -201,6 +202,7 @@ export function buildApp() {
       v1.register(meRoutes);
       v1.register(stationsRoutes);
       v1.register(stationHealthRoutes);
+      v1.register(stationRankingRoutes);
       v1.register(genresRoutes);
       v1.register(languagesRoutes);
     },

@@ -341,6 +341,19 @@ export async function findStationById(id: number): Promise<Station | null> {
   return row ? toStation(row) : null;
 }
 
+// Step 22: bulk-hydrates full Station objects (genres/languages included)
+// for a set of ids in one round trip - the ranking repository already
+// knows *which* stations and in *what order* from its own reliability
+// query, so re-fetching them one at a time via findStationById would be an
+// avoidable N+1. Postgres's ANY($1) makes no ordering guarantee, so the
+// caller is responsible for re-sorting these back into its own ranked
+// order - this function only ever hydrates, it never ranks.
+export async function findStationsByIds(ids: number[]): Promise<Station[]> {
+  if (ids.length === 0) return [];
+  const result = await query<StationRow>(`${STATION_SELECT} WHERE s.id = ANY($1)`, [ids]);
+  return result.rows.map(toStation);
+}
+
 export interface StationHealthCheckTarget {
   id: number;
   streamUrl: string;

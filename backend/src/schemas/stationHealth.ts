@@ -2,6 +2,8 @@
 // the same way schemas/stations.ts separated out from schemas/common.ts as
 // the Radio Master Catalog domain grew.
 
+import { stationSchema } from "./stations.js";
+
 export const stationHealthCheckSchema = {
   type: "object",
   properties: {
@@ -34,4 +36,16 @@ export const stationReliabilitySchema = {
     "uptimePercentage",
     "averageLatencyMs",
   ],
+} as const;
+
+// Step 22: one entry in a per-country ranked fallback chain - the full
+// station (so a client can render/play it immediately, not look it up
+// separately) paired with the reliability figures that placed it here.
+export const rankedStationSchema = {
+  type: "object",
+  properties: {
+    station: stationSchema,
+    reliability: stationReliabilitySchema,
+  },
+  required: ["station", "reliability"],
 } as const;

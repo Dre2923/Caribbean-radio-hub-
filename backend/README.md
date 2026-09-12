@@ -111,6 +111,11 @@ is still calling it.
 - `GET /v1/stations/:id` — a single active station. `404` for an unknown id
   or a curated-off (inactive) one — the same response either way, see
   "Radio Master Catalog" below.
+- `GET /v1/stations/ranked` — a country's active stations ranked best-first
+  by recent streaming reliability (the automatic fallback chain). Public,
+  no auth. Requires `?countryId=`; optional `?windowHours=` (default 24,
+  max 168) and `?limit=` (default 20, max 50). See "Stream Reliability"
+  below.
 - `POST /v1/stations` — requires an admin account (see "Authorization: user
   roles" above). Body: `{ countryId, name, streamUrl, websiteUrl?, logoUrl?, description?, genreIds?, languageIds? }`.
   `streamUrl`/`websiteUrl`/`logoUrl` must be HTTPS. `400` on invalid input, an
@@ -802,6 +807,69 @@ and a live-server run confirming a station with zero checks returns
 `null`/`null`, and the same station after three real checks against a
 genuinely unreachable domain correctly shows `0`% uptime (not `null`) with
 `averageLatencyMs` still `null`.
+
+### Per-country ranking (Step 22)
+
+The actual feature this document's "Radio Station Quality Ranking"
+describes: for each country, stations ranked best-first by real, measured
+reliability, so a client can try `stations[0]` and automatically fall
+through to the next entry if it fails to play. Public, unauthenticated
+(`GET /v1/stations/ranked?countryId=&windowHours=&limit=`) — this is a
+production listening-client feature, not an admin tool.
+
+`getRankedStationReliabilityForCountry` (`stationHealthRepository.ts`) is
+one aggregation query per country — not one query per station, which would
+only get worse as a country's catalog grows — that computes and orders by
+the ranking rule in a single `ORDER BY`: known reliability beats unknown,
+highest uptime first, lower average latency breaks a tie, station name
+breaks any remaining tie for full determinism.
+
+**The unknown-station placement is a deliberate, reasoned choice:** a
+station with zero recorded checks could be broken (a `streamUrl` typo,
+wrong port, anything Step 20's automatic sweep just hasn't caught yet) just
+as easily as it could be fine — so it ranks *after* every station this
+system has actually verified, even one with a confirmed-mediocre track
+record. Trusting measured evidence over no evidence at all, not assuming
+the best of an unverified stream.
+
+`stationRankingRepository.ts` (`getRankedStationsForCountry`) combines that
+ranking query with a new bulk `findStationsByIds` (`stationsRepository.ts`
+— one hydration round trip for the whole ranked set, re-sorted back into
+rank order since Postgres's `ANY($1)` makes no ordering guarantee), so each
+response entry carries the full station object paired with the reliability
+figures that placed it there — not a bare id list a client would have to
+look up separately.
+
+Registered as a static route (`/stations/ranked`), not a sub-path of
+`/stations/:id` — verified live, not assumed safe from routing theory
+alone, that an id-less request correctly hits this route's own querystring
+validation (`400`, missing `countryId`) rather than ever being captured by
+the `:id` route's integer check.
+
+**Found and fixed a second real test-isolation gap during this step's own
+test-writing** (the same class Steps 18/20 already hit, recognized
+immediately this time): ranking has no `q=` marker to scope a test to just
+its own rows — it's inherently "every active station in a country" — so
+the first version of these tests picked an unused launch country to dodge
+every *other* test file's accumulated pollution. Correct, but incomplete:
+this file's own repeated local runs would just as surely re-pollute those
+same countries over time. Fixed by hard-deleting every station a test
+creates in `afterEach` (cascading to its health checks) — both fixes
+together (avoid others' pollution, clean up your own), not either alone.
+
+Verified: clean build and lint; the full 188-test suite (11 new) passing
+three consecutive runs, including running the new file back-to-back twice
+locally specifically to prove the `afterEach` cleanup actually prevents
+self-accumulation, not just assumed to; `npm audit` clean; proven to
+actually catch two real bugs by temporarily (a) flipping `NULLS LAST` to
+`NULLS FIRST` in the ranking order and (b) dropping the `country_id` filter
+from the ranking query entirely, watching 8 of the 11 tests fail (the query
+broke outright rather than subtly misordering — an even louder signal)
+before restoring both; and a live-server run with three real stations
+(measured 100% uptime, measured 0% uptime, never-checked) in a country
+untouched by any other test data, confirming the exact ranked order the
+design intends, plus confirming live that `/v1/stations/ranked` and
+`/v1/stations/:id` never shadow each other.
 
 ## Security baseline
 
