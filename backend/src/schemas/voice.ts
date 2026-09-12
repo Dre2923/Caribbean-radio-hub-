@@ -2,6 +2,7 @@
 // same way stations/events separated out from schemas/common.ts.
 
 import { stationSchema } from "./stations.js";
+import { eventSchema } from "./events.js";
 
 // A spoken sentence transcribed client-side (see commandResolver.ts's
 // module comment) - generous enough for a real command but bounded
@@ -12,6 +13,7 @@ export const VOICE_INTENTS = [
   "play_station",
   "play_ranked",
   "playback_control",
+  "search_events",
   "ambiguous",
   "not_found",
   "unrecognized",
@@ -39,10 +41,27 @@ export const voiceCommandResponseSchema = {
     station: { anyOf: [stationSchema, { type: "null" }] },
     rankedStations: { type: ["array", "null"], items: stationSchema },
     candidates: { type: ["array", "null"], items: stationSchema },
+    events: { type: ["array", "null"], items: eventSchema },
     countryId: { type: ["integer", "null"] },
     genreId: { type: ["integer", "null"] },
+    categoryId: { type: ["integer", "null"] },
+    dateRangeStart: { type: ["string", "null"], format: "date-time" },
+    dateRangeEnd: { type: ["string", "null"], format: "date-time" },
     action: { type: ["string", "null"], enum: [...PLAYBACK_ACTIONS, null] },
     message: { type: ["string", "null"] },
   },
-  required: ["intent", "station", "rankedStations", "candidates", "countryId", "genreId", "action", "message"],
+  required: [
+    "intent",
+    "station",
+    "rankedStations",
+    "candidates",
+    "events",
+    "countryId",
+    "genreId",
+    "categoryId",
+    "dateRangeStart",
+    "dateRangeEnd",
+    "action",
+    "message",
+  ],
 } as const;

@@ -1502,29 +1502,74 @@ result out.
   one hit for a short/common phrase, and the response's `intent:
   "ambiguous"` plus `candidates` lets the client ask "which one?" instead
   of silently picking one.
+- **Event search (Step 35)**: `"events in Jamaica"`, `"carnival events in
+  Trinidad"`, `"carnival events"` (defaults to the caller's profile
+  country, the identical personalization as a genre-only station command),
+  and `"today"`/`"tomorrow"`/`"this weekend"` relative-date suffixes
+  (`"events in Jamaica this weekend"`), all resolved the same
+  keyword/phrase way as station commands, against this app's own event
+  categories (12 seeded) rather than genres. `intent: "search_events"`
+  always queries `status: "approved"`/`upcomingOnly: true` unconditionally
+  — a voice command is still just another client of the public events
+  listing (Steps 26/29/30), never the moderation queue, so a pending or
+  rejected submission can never surface through it. The resolved
+  `dateRangeStart`/`dateRangeEnd` are always echoed back (not just applied
+  silently) so the client can display what range was actually searched.
+  "This weekend" specifically means the Saturday-through-Sunday already
+  under way if today already is one of those two days, never a week
+  further out — the exact edge case a naive "next Saturday" calculation
+  would get wrong on a Sunday.
 
 No migration, no new schema — this is pure orchestration over
 already-existing capabilities: `GET /v1/stations`'s search (Step 14) for
-play-by-name, and `GET /v1/stations/ranked`'s reliability ranking (Step
-22) for play-by-genre-in-country, with the genre filter applied in
-application code over the already-ranked list so the fallback-chain order
-(best-first) is preserved exactly.
+play-by-name, `GET /v1/stations/ranked`'s reliability ranking (Step 22)
+for play-by-genre-in-country (genre filter applied in application code
+over the already-ranked list so the fallback-chain order stays intact),
+and the public events listing (Steps 26/29/30) for event search.
 
-Verified: clean build and lint (no migration to cycle this step); the
-full 286-test suite (14 new) passing three consecutive runs; `npm audit`
-clean; proven to actually catch two real bugs by temporarily (a) removing
-the in-application genre filter over the ranked list and watching a
-wrong-genre station wrongly appear in the result, and (b) removing the
-"St." → "Saint " country-alias normalization and watching "play reggae in
-St Lucia" wrongly fail to resolve the country at all, in both cases
-restoring immediately and confirming a byte-identical diff against the
-pre-bug backup; and a live-server run covering every intent - playback
-control verbs, an exact station-name match, a genre-in-country match
-against a real freshly-created station, that same query correctly
+Verified (Step 34): clean build and lint (no migration to cycle this
+step); the full 286-test suite (14 new) passing three consecutive runs;
+`npm audit` clean; proven to actually catch two real bugs by temporarily
+(a) removing the in-application genre filter over the ranked list and
+watching a wrong-genre station wrongly appear in the result, and (b)
+removing the "St." → "Saint " country-alias normalization and watching
+"play reggae in St Lucia" wrongly fail to resolve the country at all, in
+both cases restoring immediately and confirming a byte-identical diff
+against the pre-bug backup; and a live-server run covering every intent -
+playback control verbs, an exact station-name match, a genre-in-country
+match against a real freshly-created station, that same query correctly
 `not_found` before the station existed, an unresolvable country name,
 disambiguating between two real stations whose names both matched a
 search term, and a completely unrecognized phrase - with all live test
 data deleted afterward.
+
+Verified (Step 35): clean build and lint; the full 296-test suite (10 new
+in `tests/voiceCommand.test.ts`, including a `vi.useFakeTimers({ toFake:
+["Date"] })`-based test that deterministically exercises the "this
+weekend on an actual Sunday" edge case rather than leaving it to chance
+on whatever day the suite happens to run) passing three consecutive runs;
+`npm audit` clean; proven to actually catch two real bugs by temporarily
+(a) dropping the `categoryId` filter from the `listEvents` call and
+watching a wrong-category event wrongly appear in the result, and (b)
+removing `getThisWeekendRange`'s Sunday special-case and watching it
+wrongly skip 6 days to the *next* Saturday instead of staying on the
+current day, in both cases restoring immediately and confirming a
+byte-identical diff against the pre-bug backup; and a live-server run
+covering event search by country, by category, an unresolvable category
+and an unresolvable country, a `"this weekend"` range that correctly
+excluded an event outside it, a `"today"` range that correctly excluded
+an event two days out, and confirmation that a regular user's own
+pending submission never appeared in another account's search results -
+with all live test data deleted afterward. Also found and fixed, while
+running this step's own full-suite verification, a real, long-standing
+test-hygiene gap unrelated to voice commands: `tests/stationHealth.test.ts`
+never tracked or cleaned up the stations it created, silently
+accumulating 1096 orphaned rows in the shared test database across this
+build's full history until one finally collided with a later run's
+OS-reused ephemeral port on `radio_stations`' `UNIQUE(stream_url)`
+constraint - fixed with the same `createdStationIds` + `afterEach`
+pattern already established everywhere else in this suite, after
+deleting the accumulated backlog.
 
 ## Security baseline
 

@@ -8,6 +8,26 @@ afterAll(async () => {
   await pool.end();
 });
 
+// createStation (below) never tracked what it created, so every local run
+// of this file left its stations (and, for the "reachable" test
+// specifically, a real ephemeral-port stream_url) permanently in the
+// shared test database forever - found the hard way when a later run's
+// OS-assigned port collided with an old, never-cleaned-up row and hit
+// radio_stations' UNIQUE(stream_url) constraint (Step 12). Fixed here:
+// mirroring every other test file's own createdStationIds + top-level
+// afterEach pattern, deleting the 1096-row backlog this gap had already
+// accumulated (`DELETE FROM radio_stations WHERE name LIKE 'Health Check
+// Station %'`, a marker only this file has ever used) as a one-time
+// cleanup, then keeping it that way going forward.
+let createdStationIds: number[] = [];
+
+afterEach(async () => {
+  if (createdStationIds.length > 0) {
+    await pool.query("DELETE FROM radio_stations WHERE id = ANY($1)", [createdStationIds]);
+    createdStationIds = [];
+  }
+});
+
 async function getRealCountryId(app: ReturnType<typeof buildApp>): Promise<number> {
   const response = await app.inject({ method: "GET", url: "/v1/countries" });
   const countries = response.json().countries as Array<{ id: number }>;
@@ -81,7 +101,9 @@ async function createStation(
     payload: { countryId, name: `Health Check Station ${Date.now()}`, streamUrl },
     headers: { authorization: `Bearer ${adminToken}` },
   });
-  return create.json().station.id as number;
+  const stationId = create.json().station.id as number;
+  createdStationIds.push(stationId);
+  return stationId;
 }
 
 describe("POST /v1/admin/stations/:id/health-check", () => {

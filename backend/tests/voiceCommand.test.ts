@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { setUserRole } from "../src/repositories/usersRepository.js";
@@ -7,23 +7,32 @@ afterAll(async () => {
   await pool.end();
 });
 
-// getRankedStationsForCountry (Step 22) returns every active station in a
-// country, with no q=/search filter to scope a test down the way other
-// endpoints' tests can - the identical hazard tests/stationRanking.test.ts
-// already documents and solves. Reusing that exact same two-layer fix
-// here: a fresh, otherwise-untouched launch country per test (cycling
-// through countries[1], [2], ... - never countries[0], which every other
-// test file's own fixtures have accumulated well over a thousand stations
-// in) plus hard-deleting every station this file creates in afterEach, so
-// exact-membership assertions about "this country's ranked list" stay
-// valid regardless of how many times this file has already run locally.
+// getRankedStationsForCountry (Step 22) and listEvents (Steps 24-30)
+// return every active station/event in a country, with no q=/search
+// filter to scope a test down the way other endpoints' tests can. Unlike
+// tests/stationRanking.test.ts (which asserts exact order/count and so
+// needs one genuinely untouched country per test), every assertion in
+// this file checks membership of a specific, just-created id
+// (`.toContain`/`.not.toContain`) rather than the shape of the whole
+// list - accumulated cruft from other tests/other local runs in the same
+// country can never make one of those assertions wrong. So countries[1..]
+// (never countries[0], which every other test file's fixtures have
+// accumulated well over a thousand stations in) are cycled with a plain
+// modulo rather than needing as many distinct countries as this file has
+// tests; every station/event this file creates is still hard-deleted in
+// afterEach as the actual, independent hygiene guarantee.
 let createdStationIds: number[] = [];
 let createdUserIds: number[] = [];
+let createdEventIds: number[] = [];
 
 afterEach(async () => {
   if (createdStationIds.length > 0) {
     await pool.query("DELETE FROM radio_stations WHERE id = ANY($1)", [createdStationIds]);
     createdStationIds = [];
+  }
+  if (createdEventIds.length > 0) {
+    await pool.query("DELETE FROM events WHERE id = ANY($1)", [createdEventIds]);
+    createdEventIds = [];
   }
   if (createdUserIds.length > 0) {
     await pool.query("DELETE FROM users WHERE id = ANY($1)", [createdUserIds]);
@@ -31,13 +40,14 @@ afterEach(async () => {
   }
 });
 
-let nextCountryIndex = 1;
+let nextCountryOffset = 0;
 async function getIsolatedCountryId(app: ReturnType<typeof buildApp>): Promise<number> {
   const response = await app.inject({ method: "GET", url: "/v1/countries" });
   const countries = response.json().countries as Array<{ id: number; name: string }>;
-  const index = nextCountryIndex++;
-  const country = countries[index];
-  if (!country) throw new Error(`expected at least ${index + 1} seeded countries`);
+  const usableCountries = countries.slice(1); // never countries[0] - see this file's own top comment
+  if (usableCountries.length === 0) throw new Error("expected at least 2 seeded countries");
+  const country = usableCountries[nextCountryOffset % usableCountries.length];
+  nextCountryOffset++;
   return country.id;
 }
 
@@ -104,6 +114,49 @@ async function createStation(app: ReturnType<typeof buildApp>, options: CreateSt
   const stationId = response.json().station.id as number;
   createdStationIds.push(stationId);
   return stationId;
+}
+
+async function getCategoryId(app: ReturnType<typeof buildApp>, name: string): Promise<number> {
+  const response = await app.inject({ method: "GET", url: "/v1/event-categories" });
+  const categories = response.json().categories as Array<{ id: number; name: string }>;
+  const category = categories.find((c) => c.name === name);
+  if (!category) throw new Error(`expected a seeded event category named "${name}"`);
+  return category.id;
+}
+
+function futureIso(hoursFromNow: number): string {
+  return new Date(Date.now() + hoursFromNow * 60 * 60 * 1000).toISOString();
+}
+
+interface CreateEventOptions {
+  countryId: number;
+  token: string;
+  title: string;
+  startsAt: string;
+  categoryIds?: number[];
+}
+
+// Creates a real event via the actual submission route, exactly like a
+// real user would - admin auto-approval (Step 24) means an admin token
+// here always yields an immediately-approved event, which is what these
+// tests need for the public-events-search behavior resolveEventSearch
+// calls into.
+async function createEventViaApi(app: ReturnType<typeof buildApp>, options: CreateEventOptions): Promise<number> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/events",
+    payload: {
+      countryId: options.countryId,
+      title: options.title,
+      startsAt: options.startsAt,
+      categoryIds: options.categoryIds,
+    },
+    headers: { authorization: `Bearer ${options.token}` },
+  });
+  expect(response.statusCode).toBe(201);
+  const eventId = response.json().event.id as number;
+  createdEventIds.push(eventId);
+  return eventId;
 }
 
 async function sendCommand(app: ReturnType<typeof buildApp>, token: string, text: string) {
@@ -406,6 +459,265 @@ describe("POST /v1/voice/command", () => {
 
     const response = await sendCommand(app, token, "");
     expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});
+
+describe("POST /v1/voice/command - event search (Step 35)", () => {
+  it("finds events in a named country", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "events-country");
+    const { token } = await createRegularAccount(app, "events-country");
+    const eventId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Event Country ${Date.now()}`,
+      startsAt: futureIso(48),
+    });
+
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    const response = await sendCommand(app, token, `events in ${countryName}`);
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.intent).toBe("search_events");
+    expect(body.countryId).toBe(countryId);
+    const eventIds = (body.events as Array<{ id: number }>).map((e) => e.id);
+    expect(eventIds).toContain(eventId);
+
+    await app.close();
+  });
+
+  it("the 'find' lead-in resolves identically to the bare form", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "lead-in");
+    const { token } = await createRegularAccount(app, "lead-in");
+    const eventId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Event LeadIn ${Date.now()}`,
+      startsAt: futureIso(48),
+    });
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    const response = await sendCommand(app, token, `find events in ${countryName}`);
+    expect(response.statusCode).toBe(200);
+    const eventIds = (response.json().events as Array<{ id: number }>).map((e) => e.id);
+    expect(eventIds).toContain(eventId);
+
+    await app.close();
+  });
+
+  it("filters by event category", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "category");
+    const { token } = await createRegularAccount(app, "category");
+    const carnivalId = await getCategoryId(app, "Carnival");
+    const sportsId = await getCategoryId(app, "Sports");
+    const carnivalEventId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Carnival Event ${Date.now()}`,
+      startsAt: futureIso(48),
+      categoryIds: [carnivalId],
+    });
+    const sportsEventId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Sports Event ${Date.now()}`,
+      startsAt: futureIso(48),
+      categoryIds: [sportsId],
+    });
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    const response = await sendCommand(app, token, `carnival events in ${countryName}`);
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.categoryId).toBe(carnivalId);
+    const eventIds = (body.events as Array<{ id: number }>).map((e) => e.id);
+    expect(eventIds).toContain(carnivalEventId);
+    expect(eventIds).not.toContain(sportsEventId);
+
+    await app.close();
+  });
+
+  it("a bare category command defaults to the caller's own profile country", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token } = await createRegularAccount(app, "events-default-country");
+    const profileUpdate = await app.inject({
+      method: "PATCH",
+      url: "/v1/me",
+      payload: { countryId },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(profileUpdate.statusCode).toBe(200);
+
+    const response = await sendCommand(app, token, "carnival events");
+    expect(response.statusCode).toBe(200);
+    expect(response.json().countryId).toBe(countryId);
+
+    await app.close();
+  });
+
+  it("returns not_found for an unrecognized country name", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "events-bad-country");
+
+    const response = await sendCommand(app, token, "events in Narnia");
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.intent).toBe("not_found");
+    expect(body.message).toContain("Narnia");
+
+    await app.close();
+  });
+
+  it("returns not_found for an unrecognized category paired with a valid country", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token } = await createRegularAccount(app, "events-bad-category");
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    const response = await sendCommand(app, token, `skateboarding events in ${countryName}`);
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.intent).toBe("not_found");
+    expect(body.message).toContain("skateboarding");
+
+    await app.close();
+  });
+
+  it("never surfaces a pending (unapproved) event", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token: submitterToken } = await createRegularAccount(app, "pending-submitter");
+    const { token } = await createRegularAccount(app, "pending-searcher");
+    const pendingEventId = await createEventViaApi(app, {
+      countryId,
+      token: submitterToken,
+      title: `Voice Pending Event ${Date.now()}`,
+      startsAt: futureIso(48),
+    });
+
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    const response = await sendCommand(app, token, `events in ${countryName}`);
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    // A regular user's own submission starts pending (Step 24) - never
+    // visible through the public listing this resolver calls into.
+    expect(body.intent).toBe("not_found");
+    const eventIds = ((body.events as Array<{ id: number }> | null) ?? []).map((e) => e.id);
+    expect(eventIds).not.toContain(pendingEventId);
+
+    await app.close();
+  });
+
+  it("resolves 'this weekend' to a Saturday-through-Sunday UTC range", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "weekend-range");
+
+    const response = await sendCommand(app, token, "events this weekend");
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.dateRangeStart).not.toBeNull();
+    expect(body.dateRangeEnd).not.toBeNull();
+    const start = new Date(body.dateRangeStart as string);
+    const end = new Date(body.dateRangeEnd as string);
+    // Saturday (6) unless today already IS Sunday (0), in which case the
+    // remaining weekend starts today - see commandResolver.ts's
+    // getThisWeekendRange for the exact rule.
+    expect([6, 0]).toContain(start.getUTCDay());
+    expect(end.getUTCDay()).toBe(0);
+    expect(end.getTime()).toBeGreaterThan(start.getTime());
+
+    await app.close();
+  });
+
+  it("on an actual Sunday, 'this weekend' starts today rather than skipping to next Saturday", async () => {
+    // Deterministic, not left to chance on whatever day this suite
+    // happens to run - the general (non-Sunday) branch of
+    // getThisWeekendRange would, if it ever regressed to also run on a
+    // Sunday, advance 6 days to the *next* Saturday instead of treating
+    // today as the remainder of the current weekend. 2026-09-13 is a real
+    // Sunday (UTC).
+    // Only Date is faked (not setTimeout/setInterval/etc.) - this test
+    // still makes real database round trips through app.inject(), and
+    // faking every timer would stall Node's own internals (the pg driver
+    // included) waiting on a clock that never advances.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-13T15:00:00.000Z"));
+    try {
+      const app = buildApp();
+      const { token } = await createRegularAccount(app, "weekend-sunday");
+
+      const response = await sendCommand(app, token, "events this weekend");
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.dateRangeStart).toBe("2026-09-13T00:00:00.000Z");
+      expect(body.dateRangeEnd).toBe("2026-09-13T23:59:59.999Z");
+
+      await app.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("actually filters events to within the resolved 'today' range, not just a fixed window", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "today-filter");
+    const { token } = await createRegularAccount(app, "today-filter");
+    const countriesResponse = await app.inject({ method: "GET", url: "/v1/countries" });
+    const countryName = (countriesResponse.json().countries as Array<{ id: number; name: string }>).find(
+      (c) => c.id === countryId,
+    )?.name;
+
+    // Resolve "today" first so the fixture events are placed relative to
+    // the server's own actual computed boundaries, not a guessed
+    // wall-clock offset - avoids any midnight-UTC-boundary flakiness.
+    const probe = await sendCommand(app, token, `events in ${countryName} today`);
+    const rangeEnd = new Date(probe.json().dateRangeEnd as string);
+
+    const insideId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Today Inside ${Date.now()}`,
+      startsAt: new Date(rangeEnd.getTime() - 60_000).toISOString(),
+    });
+    const outsideId = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: `Voice Today Outside ${Date.now()}`,
+      startsAt: new Date(rangeEnd.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const response = await sendCommand(app, token, `events in ${countryName} today`);
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    const eventIds = ((body.events as Array<{ id: number }> | null) ?? []).map((e) => e.id);
+    expect(eventIds).toContain(insideId);
+    expect(eventIds).not.toContain(outsideId);
 
     await app.close();
   });
