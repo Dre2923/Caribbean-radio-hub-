@@ -8,6 +8,7 @@ export const MAX_EVENT_VENUE_LENGTH = 300; // matches events.venue's column widt
 export const MAX_EVENT_DESCRIPTION_LENGTH = 2000;
 export const MAX_EVENT_SEARCH_LENGTH = 200; // matches MAX_EVENT_TITLE_LENGTH - never a longer match target
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
+export const MAX_MODERATION_REASON_LENGTH = 500; // a moderation note, not a second description field
 // Generous relative to the seeded starter set of event categories (both
 // tables are meant to keep growing via curation), while still bounding an
 // abusive request that tries to submit an enormous id array - the same
@@ -50,6 +51,13 @@ export const eventSchema = {
     // radio_stations.created_by_user_id) or, in principle, for a row that
     // predates attribution.
     createdByUserId: { type: ["integer", "null"] },
+    // Step 27: only ever non-null once an admin has actually decided this
+    // event's status - either an admin's own submission (auto-approved at
+    // creation) or a later PATCH. Always null for a still-pending
+    // submission nobody has moderated yet.
+    moderatedAt: { type: ["string", "null"], format: "date-time" },
+    moderatedByUserId: { type: ["integer", "null"] },
+    moderationReason: { type: ["string", "null"] },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
@@ -66,6 +74,9 @@ export const eventSchema = {
     "status",
     "categories",
     "createdByUserId",
+    "moderatedAt",
+    "moderatedByUserId",
+    "moderationReason",
     "createdAt",
     "updatedAt",
   ],
@@ -108,5 +119,9 @@ export const updateEventBodySchema = {
     // "curation is just another PATCH-able field" pattern already
     // established for radio_stations.isActive.
     status: { type: "string", enum: [...EVENT_STATUSES] },
+    // Only valid together with status in the same request - enforced in
+    // the route handler (a cross-field rule, not a shape one), the same
+    // pattern as radio_stations' deactivationReason/isActive.
+    moderationReason: { type: "string", maxLength: MAX_MODERATION_REASON_LENGTH },
   },
 } as const;

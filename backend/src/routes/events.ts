@@ -45,6 +45,7 @@ interface TrimmableEventFields {
   venue?: string;
   imageUrl?: string;
   ticketUrl?: string;
+  moderationReason?: string;
 }
 
 // Same input-hygiene reasoning as routes/stations.ts's trimStationBodyStrings
@@ -53,7 +54,14 @@ interface TrimmableEventFields {
 // into a submission a moderator later has to read.
 function trimEventBodyStrings(body: Partial<TrimmableEventFields> | undefined): void {
   if (!body) return;
-  for (const field of ["title", "description", "venue", "imageUrl", "ticketUrl"] as const) {
+  for (const field of [
+    "title",
+    "description",
+    "venue",
+    "imageUrl",
+    "ticketUrl",
+    "moderationReason",
+  ] as const) {
     const value = body[field];
     if (typeof value === "string") {
       body[field] = value.trim();
@@ -206,6 +214,11 @@ async function createEventHandler(
       status,
       categoryIds,
       createdByUserId: request.user.sub,
+      // An admin's own submission is auto-approved above - that auto-
+      // approval *is* the moderation decision, made by this same admin,
+      // so it's recorded as one (Step 27) rather than left looking
+      // unmoderated just because it happened at creation time.
+      moderatedByUserId: role === "admin" ? request.user.sub : null,
     });
     return reply.status(201).send({ event });
   } catch (err) {
@@ -232,6 +245,7 @@ interface UpdateEventBody {
   imageUrl?: string;
   ticketUrl?: string;
   status?: EventStatus;
+  moderationReason?: string;
   categoryIds?: number[];
 }
 
@@ -239,8 +253,14 @@ async function updateEventHandler(
   request: FastifyRequest<{ Params: { id: number }; Body: UpdateEventBody }>,
   reply: FastifyReply,
 ) {
+  if (request.body.moderationReason !== undefined && request.body.status === undefined) {
+    return badRequest(
+      reply,
+      "moderationReason is only valid together with status in the same request",
+    );
+  }
   try {
-    const event = await updateEvent(request.params.id, request.body);
+    const event = await updateEvent(request.params.id, request.body, request.user.sub);
     if (!event) {
       return eventNotFound(reply);
     }
@@ -462,7 +482,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         description:
           "Updates an event, including moderating it (status: 'approved'/'rejected'). " +
           "Requires an admin account. All fields optional; only the fields present are " +
-          "changed. categoryIds, if present, replaces the event's full set of " +
+          "changed. May include an optional moderationReason (only valid together with " +
+          "status) - the acting admin and a timestamp are recorded automatically " +
+          "either way. categoryIds, if present, replaces the event's full set of " +
           "categories - omit to leave it untouched, send [] to clear it.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],

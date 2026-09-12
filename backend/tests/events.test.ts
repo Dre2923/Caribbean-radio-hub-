@@ -868,3 +868,143 @@ describe("Event search and date-range filtering (Step 26)", () => {
     await app.close();
   });
 });
+
+describe("Event moderation audit trail (Step 27)", () => {
+  it("a regular user's pending submission is unmoderated", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createRegularToken(app, "unmoderated");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Unmoderated Submission Event",
+    });
+    expect(created.json().event.status).toBe("pending");
+    expect(created.json().event.moderatedAt).toBeNull();
+    expect(created.json().event.moderatedByUserId).toBeNull();
+    expect(created.json().event.moderationReason).toBeNull();
+
+    await app.close();
+  });
+
+  it("an admin's own auto-approved submission is recorded as moderated by that same admin", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token, userId: adminId } = await createAdminAccount(app, "self-moderate");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Self-Approved Admin Event",
+    });
+    expect(created.json().event.status).toBe("approved");
+    expect(created.json().event.moderatedByUserId).toBe(adminId);
+    expect(created.json().event.moderatedAt).not.toBeNull();
+    expect(created.json().event.moderationReason).toBeNull();
+
+    await app.close();
+  });
+
+  it("an admin approving a pending submission is recorded as the moderator", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token: adminToken, userId: adminId } = await createAdminAccount(app, "approve-attrib");
+    const regularToken = await createRegularToken(app, "approve-attrib");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token: regularToken,
+      title: "To Be Attributed Event",
+    });
+    const eventId = created.json().event.id as number;
+    expect(created.json().event.moderatedByUserId).toBeNull();
+
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { status: "approved" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(patch.json().event.moderatedByUserId).toBe(adminId);
+    expect(patch.json().event.moderatedAt).not.toBeNull();
+
+    await app.close();
+  });
+
+  it("a rejection can include a moderationReason", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "reject-reason");
+    const regularToken = await createRegularToken(app, "reject-reason");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token: regularToken,
+      title: "Rejected With Reason Event",
+    });
+    const eventId = created.json().event.id as number;
+
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { status: "rejected", moderationReason: "  Duplicate of an existing listing  " },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().event.status).toBe("rejected");
+    expect(patch.json().event.moderationReason).toBe("Duplicate of an existing listing");
+
+    await app.close();
+  });
+
+  it("rejects a moderationReason without status in the same request", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const adminToken = await createAdminToken(app, "reason-without-status");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token: adminToken,
+      title: "Reason Without Status Event",
+    });
+    const eventId = created.json().event.id as number;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { moderationReason: "This should be rejected" },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toMatch(/moderationReason/);
+
+    await app.close();
+  });
+
+  it("a PATCH that doesn't touch status leaves the moderation record untouched", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const { token, userId: adminId } = await createAdminAccount(app, "leave-untouched");
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Untouched Moderation Event",
+    });
+    const originalModeratedAt = created.json().event.moderatedAt as string;
+    expect(created.json().event.moderatedByUserId).toBe(adminId);
+
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${created.json().event.id}`,
+      payload: { title: "Untouched Moderation Event (Renamed)" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().event.moderatedByUserId).toBe(adminId);
+    expect(patch.json().event.moderatedAt).toBe(originalModeratedAt);
+
+    await app.close();
+  });
+});

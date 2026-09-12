@@ -176,9 +176,11 @@ is still calling it.
   This is also how moderation happens: `{ status: "approved" }` or
   `{ status: "rejected" }` on a pending submission — the same
   "curation is just another PATCH-able field" pattern as
-  `radio_stations.isActive`. `categoryIds`, if present, *replaces* the
-  event's full category set — omit to leave it untouched, send `[]` to
-  clear it. `404` for an unknown id.
+  `radio_stations.isActive`. May include an optional `moderationReason`
+  (only valid together with `status`) — the acting admin and a timestamp
+  are recorded automatically either way. `categoryIds`, if present,
+  *replaces* the event's full category set — omit to leave it untouched,
+  send `[]` to clear it. `404` for an unknown id.
 - `DELETE /v1/events/:id` — requires an admin account. Permanently deletes
   the event — prefer `PATCH { status: "rejected" }` for routine moderation.
   `404` for an unknown id.
@@ -1164,6 +1166,45 @@ case-insensitively, `startsAfter`/`startsBefore` each isolate the correct
 side of the boundary, a reversed range is rejected with `400`, and the
 admin listing honors the same `q`+`startsBefore` combination together
 with its own `status` filter.
+
+### Event moderation audit trail (Step 27)
+
+The fourth step of the Events Database bucket, mirroring Step 17's
+`radio_stations` deactivation audit exactly. Step 24's `status` already
+lets an admin approve/reject a submission, but recorded nothing about who
+decided, when, or why.
+
+Added `moderated_at`/`moderated_by_user_id`/`moderation_reason`, all
+nullable, all populated only as a side effect of a real status decision —
+never independently editable:
+
+- An admin's own submission is auto-approved at creation (Step 24) — that
+  auto-approval *is* the moderation decision, made by the same admin, so
+  it's recorded as one right away rather than left looking unmoderated
+  just because it happened at creation time rather than a later `PATCH`.
+- A regular user's submission stays fully unmoderated (all three `null`)
+  until an admin's `PATCH` actually decides its `status` — which records
+  that `PATCH`'s own actor, timestamp, and optional `moderationReason`
+  (only valid together with `status` in the same request — the identical
+  cross-field rule as `radio_stations`' `deactivationReason`/`isActive`).
+
+Attribution is recorded on every status write, not scoped to only an
+actual pending→approved/rejected transition — re-affirming an
+already-decided status is still an admin action worth attributing, the
+same reasoning `updateStation` already applies to `deactivated_by_user_id`.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 235-test suite (6 new) passing three consecutive
+runs; `npm audit` clean; proven to actually catch two real bugs by
+temporarily (a) dropping the moderator-attribution from the `PATCH`
+status branch and (b) hardcoding the creation-time self-moderation to
+`null`, and watching the exact tests that check each attribution path
+fail with the precise wrong (`null`) value before restoring both; and a
+live-server run confirming an admin's own submission self-moderates, a
+regular user's submission stays unmoderated, a later admin approval
+records that admin and a timestamp, a rejection can carry a
+`moderationReason`, that reason is rejected with `400` without `status`,
+and a title-only edit afterward leaves the moderation record untouched.
 
 ## Security baseline
 

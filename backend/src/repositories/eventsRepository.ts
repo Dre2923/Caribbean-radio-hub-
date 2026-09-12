@@ -18,6 +18,13 @@ export interface Event {
   status: EventStatus;
   categories: EventCategory[];
   createdByUserId: number | null;
+  // Step 27: only ever populated as a side effect of a status decision -
+  // an admin's own submission auto-approved at creation, or a later PATCH
+  // that sets status - never independently settable. Always null for a
+  // submission nobody has moderated yet.
+  moderatedAt: string | null;
+  moderatedByUserId: number | null;
+  moderationReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -35,6 +42,9 @@ interface EventRow {
   status: EventStatus;
   categories: EventCategory[] | null;
   created_by_user_id: number | null;
+  moderated_at: string | null;
+  moderated_by_user_id: number | null;
+  moderation_reason: string | null;
   created_at: string;
   updated_at: string;
   total_count: string;
@@ -86,7 +96,9 @@ const ENDS_AT_CONSTRAINT = "events_ends_at_after_starts_at";
 const EVENT_SELECT = `
   SELECT
     e.id, e.country_id, e.title, e.description, e.venue, e.starts_at, e.ends_at,
-    e.image_url, e.ticket_url, e.status, e.created_by_user_id, e.created_at, e.updated_at,
+    e.image_url, e.ticket_url, e.status, e.created_by_user_id,
+    e.moderated_at, e.moderated_by_user_id, e.moderation_reason,
+    e.created_at, e.updated_at,
     COALESCE(
       (SELECT json_agg(json_build_object('id', c.id, 'name', c.name) ORDER BY c.name)
        FROM event_category_assignments eca JOIN event_categories c ON c.id = eca.category_id
@@ -111,6 +123,9 @@ function toEvent(row: EventRow): Event {
     status: row.status,
     categories: row.categories ?? [],
     createdByUserId: row.created_by_user_id,
+    moderatedAt: row.moderated_at,
+    moderatedByUserId: row.moderated_by_user_id,
+    moderationReason: row.moderation_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -176,6 +191,12 @@ export interface NewEvent {
   status: EventStatus;
   categoryIds?: number[];
   createdByUserId?: number | null;
+  // Step 27: set only when this creation *is* the moderation decision - an
+  // admin's own submission, auto-approved at creation (routes/events.ts
+  // passes the same admin's id here). A regular user's pending submission
+  // passes undefined/null, leaving moderatedAt/moderatedByUserId both null
+  // until a future PATCH actually moderates it.
+  moderatedByUserId?: number | null;
 }
 
 export async function createEvent(input: NewEvent): Promise<Event> {
@@ -203,6 +224,16 @@ export async function createEvent(input: NewEvent): Promise<Event> {
       const id = result.rows[0].id;
       if (input.categoryIds) {
         await replaceEventCategories(client, id, input.categoryIds);
+      }
+      // A follow-up statement in the same transaction, not a fifth+
+      // INSERT column - moderated_at needs the database's own now(), not
+      // an app-server Date, to stay consistent with every other
+      // DB-generated timestamp on this row (created_at/updated_at).
+      if (input.moderatedByUserId != null) {
+        await client.query(
+          "UPDATE events SET moderated_by_user_id = $1, moderated_at = now() WHERE id = $2",
+          [input.moderatedByUserId, id],
+        );
       }
       return id;
     });
@@ -313,13 +344,28 @@ export interface EventUpdate {
   imageUrl?: string | null;
   ticketUrl?: string | null;
   status?: EventStatus;
+  // Only meaningful together with status in the same update - the route
+  // validates that combination before this function is ever called, the
+  // same cross-field rule as StationUpdate.deactivationReason/isActive.
+  moderationReason?: string;
   // undefined = leave associations untouched; [] = clear them; a
   // non-empty array = replace them with exactly this set - the same
   // convention as StationUpdate.genreIds/languageIds.
   categoryIds?: number[];
 }
 
-export async function updateEvent(id: number, updates: EventUpdate): Promise<Event | null> {
+// actorUserId: the admin performing this write - recorded as
+// moderated_by_user_id only when this call is the one that sets status.
+// Unlike stationsRepository.updateStation's actorUserId, this is always a
+// real admin id, never null: PATCH /v1/events/:id is unconditionally
+// admin-gated (there's no automated/system actor for event moderation the
+// way Step 23's stream-reliability monitor is one for stations), so every
+// call site has a real id to pass.
+export async function updateEvent(
+  id: number,
+  updates: EventUpdate,
+  actorUserId: number,
+): Promise<Event | null> {
   const setClauses: string[] = [];
   const values: unknown[] = [];
 
@@ -358,6 +404,16 @@ export async function updateEvent(id: number, updates: EventUpdate): Promise<Eve
   if (updates.status !== undefined) {
     values.push(updates.status);
     setClauses.push(`status = $${values.length}`);
+    // A status decision is a moderation decision - always recorded, not
+    // scoped to only an approved->rejected/rejected->approved transition:
+    // re-affirming an already-decided status is still an admin action
+    // worth attributing, the identical reasoning as updateStation always
+    // recording who flips isActive regardless of the row's previous value.
+    values.push(actorUserId);
+    setClauses.push(`moderated_by_user_id = $${values.length}`);
+    setClauses.push("moderated_at = now()");
+    values.push(updates.moderationReason ?? null);
+    setClauses.push(`moderation_reason = $${values.length}`);
   }
 
   const touchesCategories = updates.categoryIds !== undefined;
