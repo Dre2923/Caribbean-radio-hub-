@@ -104,6 +104,7 @@ interface CreateEventOptions {
   endsAt?: string;
   imageUrl?: string;
   ticketUrl?: string;
+  categoryIds?: number[];
 }
 
 async function createEventViaApi(
@@ -122,6 +123,7 @@ async function createEventViaApi(
       endsAt: options.endsAt,
       imageUrl: options.imageUrl,
       ticketUrl: options.ticketUrl,
+      categoryIds: options.categoryIds,
     },
     headers: { authorization: `Bearer ${options.token}` },
   });
@@ -129,6 +131,11 @@ async function createEventViaApi(
     createdEventIds.push(response.json().event.id as number);
   }
   return response;
+}
+
+async function getRealCategoryIds(app: ReturnType<typeof buildApp>): Promise<number[]> {
+  const response = await app.inject({ method: "GET", url: "/v1/event-categories" });
+  return (response.json().categories as Array<{ id: number }>).map((category) => category.id);
 }
 
 describe("POST /v1/events", () => {
@@ -584,6 +591,158 @@ describe("GET /v1/admin/events (moderation queue)", () => {
     });
     const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
     expect(ids).toEqual([pending.json().event.id]);
+
+    await app.close();
+  });
+});
+
+describe("Event categories (Step 25)", () => {
+  it("defaults to an empty categories array when none are attached", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "no-categories");
+
+    const created = await createEventViaApi(app, { countryId, token, title: "No Category Event" });
+    expect(created.json().event.categories).toEqual([]);
+
+    await app.close();
+  });
+
+  it("attaches categories on create and returns them hydrated", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "attach-categories");
+    const [categoryA, categoryB] = await getRealCategoryIds(app);
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Categorized Event",
+      categoryIds: [categoryA, categoryB],
+    });
+    expect(created.statusCode).toBe(201);
+    const categories = created.json().event.categories as Array<{ id: number; name: string }>;
+    expect(categories.map((c) => c.id).sort((a, b) => a - b)).toEqual(
+      [categoryA, categoryB].sort((a, b) => a - b),
+    );
+
+    await app.close();
+  });
+
+  it("rejects an unknown categoryId on create", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createRegularToken(app, "bad-category");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      payload: {
+        countryId,
+        title: "Bad Category Event",
+        startsAt: futureIso(24),
+        categoryIds: [999999999],
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toMatch(/categoryIds/);
+
+    await app.close();
+  });
+
+  it("PATCH replaces the full category set, and omitting categoryIds leaves it untouched", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "replace-categories");
+    const [categoryA, categoryB, categoryC] = await getRealCategoryIds(app);
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Replaceable Category Event",
+      categoryIds: [categoryA],
+    });
+    const eventId = created.json().event.id as number;
+
+    const replaced = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { categoryIds: [categoryB, categoryC] },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(replaced.statusCode).toBe(200);
+    const replacedIds = (replaced.json().event.categories as Array<{ id: number }>)
+      .map((c) => c.id)
+      .sort((a, b) => a - b);
+    expect(replacedIds).toEqual([categoryB, categoryC].sort((a, b) => a - b));
+
+    const untouched = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { title: "Renamed, Categories Untouched" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(untouched.statusCode).toBe(200);
+    const untouchedIds = (untouched.json().event.categories as Array<{ id: number }>)
+      .map((c) => c.id)
+      .sort((a, b) => a - b);
+    expect(untouchedIds).toEqual([categoryB, categoryC].sort((a, b) => a - b));
+
+    await app.close();
+  });
+
+  it("PATCH with an empty categoryIds array clears every category", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "clear-categories");
+    const [categoryA] = await getRealCategoryIds(app);
+
+    const created = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Clearable Category Event",
+      categoryIds: [categoryA],
+    });
+    const eventId = created.json().event.id as number;
+
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: `/v1/events/${eventId}`,
+      payload: { categoryIds: [] },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().event.categories).toEqual([]);
+
+    await app.close();
+  });
+
+  it("GET /v1/events?categoryId= filters to events tagged with that category", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createAdminToken(app, "filter-category");
+    const [categoryA, categoryB] = await getRealCategoryIds(app);
+
+    const taggedA = await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Filter Category A Event",
+      categoryIds: [categoryA],
+    });
+    await createEventViaApi(app, {
+      countryId,
+      token,
+      title: "Filter Category B Event",
+      categoryIds: [categoryB],
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/events?countryId=${countryId}&categoryId=${categoryA}`,
+    });
+    const ids = (response.json().events as Array<{ id: number }>).map((event) => event.id);
+    expect(ids).toEqual([taggedA.json().event.id]);
 
     await app.close();
   });

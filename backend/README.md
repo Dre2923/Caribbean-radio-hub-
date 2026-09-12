@@ -155,31 +155,37 @@ is still calling it.
   (`windowHours`, default 24, max 168). See "Stream Reliability" below.
   `404` for an unknown station id.
 - `GET /v1/events` — lists approved events. Public, no auth. Optional
-  `?countryId=` filter. Paginated with `?limit=` (default 50, max 100) and
-  `?offset=`; ordered soonest-first by `startsAt`. See "Events" below.
+  `?countryId=`/`?categoryId=` filters (combined with AND). Paginated with
+  `?limit=` (default 50, max 100) and `?offset=`; ordered soonest-first by
+  `startsAt`. See "Events" below.
 - `GET /v1/events/:id` — a single approved event. `404` for an unknown id
   or a pending/rejected one — the same response either way, the identical
   no-leaking-moderation-state reasoning as a curated-off station's `404`.
 - `POST /v1/events` — requires authentication (any account, not just
   admin — see "Events" below). Body:
-  `{ countryId, title, description?, venue?, startsAt, endsAt?, imageUrl?, ticketUrl? }`.
+  `{ countryId, title, description?, venue?, startsAt, endsAt?, imageUrl?, ticketUrl?, categoryIds? }`.
   `imageUrl`/`ticketUrl` must be HTTPS. The resulting event's `status` is
   never client-controlled: a regular user's submission starts `pending`
   (hidden from the public routes above until an admin approves it); an
   admin's own submission is `approved` immediately. `400` on invalid
-  input, an unknown `countryId`, or `endsAt` not after `startsAt`.
+  input, an unknown `countryId`, an unknown `categoryIds` entry, or
+  `endsAt` not after `startsAt`.
 - `PATCH /v1/events/:id` — requires an admin account. All fields optional.
   This is also how moderation happens: `{ status: "approved" }` or
   `{ status: "rejected" }` on a pending submission — the same
   "curation is just another PATCH-able field" pattern as
-  `radio_stations.isActive`. `404` for an unknown id.
+  `radio_stations.isActive`. `categoryIds`, if present, *replaces* the
+  event's full category set — omit to leave it untouched, send `[]` to
+  clear it. `404` for an unknown id.
 - `DELETE /v1/events/:id` — requires an admin account. Permanently deletes
   the event — prefer `PATCH { status: "rejected" }` for routine moderation.
   `404` for an unknown id.
 - `GET /v1/admin/events` — requires an admin account. The moderation
-  queue: same `?countryId=` filter as `GET /v1/events`, plus `?status=` to
-  narrow to exactly `pending`/`approved`/`rejected` — omit it to see every
-  submission regardless of moderation state.
+  queue: same `?countryId=`/`?categoryId=` filters as `GET /v1/events`,
+  plus `?status=` to narrow to exactly `pending`/`approved`/`rejected` —
+  omit it to see every submission regardless of moderation state.
+- `GET /v1/event-categories` — lists the categories an event can be tagged
+  with. Public, no auth.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1050,6 +1056,67 @@ a regular user's submission is `404` publicly and hidden from the public
 list, an admin sees it in the moderation queue, `PATCH { status: 'approved' }`
 flips it, and it's then `200`/present in the public list, all against a
 running compiled server rather than only `app.inject()`.
+
+### Event categories (Step 25)
+
+The second step of the Events Database bucket, mirroring Step 13's
+genres/languages for the Radio Master Catalog exactly, including the
+reasoning: a database-driven lookup table (seed a starter set, add more
+later without a code change) rather than a hardcoded enum, since the
+actual mix of event types this platform hosts is exactly the kind of
+thing curators will keep expanding. Many-to-many (`event_categories` +
+junction table `event_category_assignments`), not a column on `events` —
+an event is rarely "only" one category (a Carnival event is often also a
+Concert).
+
+`event_category_assignments` uses a composite primary key on
+`(event_id, category_id)` — the pair *is* the whole fact, and it doubles
+as the uniqueness constraint — with `CASCADE` on both sides, the identical
+shape as `station_genres`/`station_languages`. Seeded with a
+representative starter set: Carnival, Festival, Concert, Cultural,
+Community, Sports, Nightlife, Food & Drink, Family, Religious, Comedy,
+Theatre & Arts (migration `1700000014000_event_categories` +
+`1700000014500_seed_event_categories` — the seed data lives in a separate
+migration for the same deferred-DDL-vs-immediate-query reason as every
+other seeded lookup table in this codebase).
+
+`GET /v1/event-categories` is a direct mirror of `GET /v1/genres`. Every
+event response now includes a hydrated `categories` array (a `json_agg`
+subquery in `EVENT_SELECT`, identical in shape to `STATION_SELECT`'s
+genres/languages subqueries — a direct `JOIN` would fan an event with N
+categories out into N duplicated rows before aggregation could run).
+`POST`/`PATCH /v1/events/:id` accept an optional `categoryIds`, following
+the exact same three-way convention already established for
+`radio_stations`' `genreIds`/`languageIds`: omit it to leave associations
+untouched, send `[]` to clear them, send a non-empty array to replace the
+full set. An unknown `categoryIds` entry is a `400`
+(`InvalidEventCategoryError`, detected the same way as stations'
+`InvalidGenreError`/`InvalidLanguageError` — a foreign-key violation's
+constraint name). `GET /v1/events`/`GET /v1/admin/events` gained a
+`?categoryId=` filter, an `EXISTS` subquery against the junction table —
+the identical pattern as `stationsRepository.listStations`'s
+`genreId`/`languageId` filters.
+
+Making a categories-touching update atomic (the event row and its
+junction-table rows must commit together) meant widening `updateEvent`
+from a plain pooled query to `withTransaction` — previously a single
+`UPDATE` statement was already atomic on its own, but a `categoryIds`
+replacement is now a second statement that has to succeed or fail with
+it.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 225-test suite (7 new) passing three consecutive
+runs; `npm audit` clean; proven to actually catch two real bugs by
+temporarily (a) skipping the DELETE half of the category-replace helper
+whenever the incoming array is empty (so `PATCH { categoryIds: [] }`
+silently failed to clear) and (b) disabling the `categoryId` `EXISTS`
+filter entirely, and watching the exact tests that check those behaviors
+fail with the precise wrong category lists before restoring both; and a
+live-server run creating a real event with two categories, confirming
+they're hydrated on create, filtering correctly narrows
+`GET /v1/events?categoryId=`, `PATCH` both replaces the full set and
+(with `[]`) clears it, a `PATCH` touching only `title` leaves categories
+untouched, and an unknown `categoryId` is rejected with `400`.
 
 ## Security baseline
 

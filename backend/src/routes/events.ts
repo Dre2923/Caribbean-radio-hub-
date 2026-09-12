@@ -9,6 +9,7 @@ import {
   MAX_EVENT_LIST_LIMIT,
   InvalidCountryError,
   InvalidEndsAtError,
+  InvalidEventCategoryError,
   type EventStatus,
 } from "../repositories/eventsRepository.js";
 import { getUserRole } from "../repositories/usersRepository.js";
@@ -51,17 +52,19 @@ function trimEventBodyStrings(body: Partial<TrimmableEventFields> | undefined): 
 
 interface ListEventsQuery {
   countryId?: number;
+  categoryId?: number;
   limit?: number;
   offset?: number;
 }
 
 async function listEventsHandler(request: FastifyRequest<{ Querystring: ListEventsQuery }>) {
-  const { countryId, limit, offset } = request.query;
+  const { countryId, categoryId, limit, offset } = request.query;
   // Always approved-only, never client-controlled - the public listing must
   // never surface a pending or rejected submission. GET /v1/admin/events
   // (below) is the admin-only route with full moderation visibility.
   const { events, total } = await listEvents({
     countryId,
+    categoryId,
     status: "approved",
     limit,
     offset,
@@ -78,6 +81,7 @@ async function listEventsHandler(request: FastifyRequest<{ Querystring: ListEven
 
 interface AdminListEventsQuery {
   countryId?: number;
+  categoryId?: number;
   status?: EventStatus;
   limit?: number;
   offset?: number;
@@ -86,11 +90,11 @@ interface AdminListEventsQuery {
 async function listAdminEventsHandler(
   request: FastifyRequest<{ Querystring: AdminListEventsQuery }>,
 ) {
-  const { countryId, status, limit, offset } = request.query;
+  const { countryId, categoryId, status, limit, offset } = request.query;
   // status is undefined unless the caller explicitly filters - showing
   // every submission regardless of moderation state is the entire point of
   // this route: it's the moderation queue itself, not just an audit view.
-  const { events, total } = await listEvents({ countryId, status, limit, offset });
+  const { events, total } = await listEvents({ countryId, categoryId, status, limit, offset });
   return {
     events,
     pagination: {
@@ -124,14 +128,24 @@ interface CreateEventBody {
   endsAt?: string;
   imageUrl?: string;
   ticketUrl?: string;
+  categoryIds?: number[];
 }
 
 async function createEventHandler(
   request: FastifyRequest<{ Body: CreateEventBody }>,
   reply: FastifyReply,
 ) {
-  const { countryId, title, description, venue, startsAt, endsAt, imageUrl, ticketUrl } =
-    request.body;
+  const {
+    countryId,
+    title,
+    description,
+    venue,
+    startsAt,
+    endsAt,
+    imageUrl,
+    ticketUrl,
+    categoryIds,
+  } = request.body;
   // Never trusts a client-supplied status - createEventBodySchema's
   // additionalProperties: false already silently strips one if sent. An
   // admin's own submission doesn't need to self-moderate (the same trust
@@ -150,6 +164,7 @@ async function createEventHandler(
       imageUrl: imageUrl ?? null,
       ticketUrl: ticketUrl ?? null,
       status,
+      categoryIds,
       createdByUserId: request.user.sub,
     });
     return reply.status(201).send({ event });
@@ -158,6 +173,9 @@ async function createEventHandler(
       return badRequest(reply, "countryId does not match a known country");
     }
     if (err instanceof InvalidEndsAtError) {
+      return badRequest(reply, err.message);
+    }
+    if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
     }
     throw err;
@@ -174,6 +192,7 @@ interface UpdateEventBody {
   imageUrl?: string;
   ticketUrl?: string;
   status?: EventStatus;
+  categoryIds?: number[];
 }
 
 async function updateEventHandler(
@@ -191,6 +210,9 @@ async function updateEventHandler(
       return badRequest(reply, "countryId does not match a known country");
     }
     if (err instanceof InvalidEndsAtError) {
+      return badRequest(reply, err.message);
+    }
+    if (err instanceof InvalidEventCategoryError) {
       return badRequest(reply, err.message);
     }
     throw err;
@@ -214,7 +236,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         description:
-          "Lists approved events. Filter with countryId. Paginated with limit " +
+          "Lists approved events. Filter with countryId and/or categoryId (see " +
+          "GET /v1/event-categories). Paginated with limit " +
           `(default ${DEFAULT_EVENT_LIST_LIMIT}, max ${MAX_EVENT_LIST_LIMIT}) and offset. ` +
           "Ordered soonest-first (startsAt ascending).",
         tags: ["events"],
@@ -223,6 +246,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           additionalProperties: false,
           properties: {
             countryId: { type: "integer", minimum: 1 },
+            categoryId: { type: "integer", minimum: 1 },
             limit: {
               type: "integer",
               minimum: 1,
@@ -266,9 +290,9 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         description:
           "Lists events with full visibility (including pending/rejected submissions) " +
-          "for admin moderation. Requires an admin account. Same countryId filter as " +
-          "GET /v1/events, plus status to filter to exactly one moderation state - " +
-          "omit status to see the full queue.",
+          "for admin moderation. Requires an admin account. Same countryId/categoryId " +
+          "filters as GET /v1/events, plus status to filter to exactly one moderation " +
+          "state - omit status to see the full queue.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         querystring: {
@@ -276,6 +300,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           additionalProperties: false,
           properties: {
             countryId: { type: "integer", minimum: 1 },
+            categoryId: { type: "integer", minimum: 1 },
             status: { type: "string", enum: ["pending", "approved", "rejected"] },
             limit: {
               type: "integer",
@@ -354,7 +379,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "Submits an event. Requires authentication (any account, not just admin). " +
           "A regular user's submission starts pending and is hidden from the public " +
           "listing until an admin approves it via PATCH; an admin's own submission is " +
-          "approved immediately.",
+          "approved immediately. Optional categoryIds attaches it to existing event " +
+          "categories (GET /v1/event-categories).",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         body: createEventBodySchema,
@@ -388,7 +414,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         description:
           "Updates an event, including moderating it (status: 'approved'/'rejected'). " +
           "Requires an admin account. All fields optional; only the fields present are " +
-          "changed.",
+          "changed. categoryIds, if present, replaces the event's full set of " +
+          "categories - omit to leave it untouched, send [] to clear it.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         params: {

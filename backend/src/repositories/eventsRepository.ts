@@ -1,5 +1,7 @@
+import type { PoolClient } from "pg";
 import { withTransaction } from "../db/transaction.js";
 import { query } from "../db/pool.js";
+import type { EventCategory } from "./eventCategoriesRepository.js";
 
 export type EventStatus = "pending" | "approved" | "rejected";
 
@@ -14,6 +16,7 @@ export interface Event {
   imageUrl: string | null;
   ticketUrl: string | null;
   status: EventStatus;
+  categories: EventCategory[];
   createdByUserId: number | null;
   createdAt: string;
   updatedAt: string;
@@ -30,6 +33,7 @@ interface EventRow {
   image_url: string | null;
   ticket_url: string | null;
   status: EventStatus;
+  categories: EventCategory[] | null;
   created_by_user_id: number | null;
   created_at: string;
   updated_at: string;
@@ -50,19 +54,36 @@ export class InvalidEndsAtError extends Error {
   }
 }
 
+export class InvalidEventCategoryError extends Error {
+  constructor() {
+    super("One or more categoryIds do not match a known event category");
+    this.name = "InvalidEventCategoryError";
+  }
+}
+
 const FOREIGN_KEY_VIOLATION = "23503";
 const CHECK_VIOLATION = "23514";
 const ENDS_AT_CONSTRAINT = "events_ends_at_after_starts_at";
 
 // Same COUNT(*) OVER() reasoning as stationsRepository.STATION_SELECT - the
 // filtered-but-unpaginated total in one round trip, harmless overhead on the
-// single-row lookups (findEventById) that also use this base query.
+// single-row lookups (findEventById) that also use this base query. The
+// categories subquery mirrors STATION_SELECT's genres/languages subqueries
+// exactly, for the identical reason: a direct JOIN against the junction
+// table would fan an event with N categories out into N duplicated rows
+// before any aggregation could run.
 const EVENT_SELECT = `
   SELECT
-    id, country_id, title, description, venue, starts_at, ends_at,
-    image_url, ticket_url, status, created_by_user_id, created_at, updated_at,
+    e.id, e.country_id, e.title, e.description, e.venue, e.starts_at, e.ends_at,
+    e.image_url, e.ticket_url, e.status, e.created_by_user_id, e.created_at, e.updated_at,
+    COALESCE(
+      (SELECT json_agg(json_build_object('id', c.id, 'name', c.name) ORDER BY c.name)
+       FROM event_category_assignments eca JOIN event_categories c ON c.id = eca.category_id
+       WHERE eca.event_id = e.id),
+      '[]'
+    ) AS categories,
     COUNT(*) OVER() AS total_count
-  FROM events
+  FROM events e
 `;
 
 function toEvent(row: EventRow): Event {
@@ -77,6 +98,7 @@ function toEvent(row: EventRow): Event {
     imageUrl: row.image_url,
     ticketUrl: row.ticket_url,
     status: row.status,
+    categories: row.categories ?? [],
     createdByUserId: row.created_by_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -84,8 +106,10 @@ function toEvent(row: EventRow): Event {
 }
 
 function toEventWriteError(err: unknown, countryId?: number): unknown {
-  if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION) && countryId !== undefined) {
-    return new InvalidCountryError(countryId);
+  if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION)) {
+    const constraint = pgConstraintName(err);
+    if (constraint?.includes("category")) return new InvalidEventCategoryError();
+    if (countryId !== undefined) return new InvalidCountryError(countryId);
   }
   if (hasPgErrorCode(err, CHECK_VIOLATION) && pgConstraintName(err) === ENDS_AT_CONSTRAINT) {
     return new InvalidEndsAtError();
@@ -105,6 +129,27 @@ function pgConstraintName(err: unknown): string | undefined {
   return undefined;
 }
 
+// Replaces an event's full set of category associations (DELETE then bulk
+// INSERT) rather than diffing - the identical pattern and reasoning as
+// stationsRepository.replaceStationGenres. ON CONFLICT DO NOTHING tolerates
+// a duplicate id appearing twice in the caller's own array. A pg client,
+// not the pool directly, so this always runs inside the same transaction
+// as the event row it belongs to.
+async function replaceEventCategories(
+  client: PoolClient,
+  eventId: number,
+  categoryIds: number[],
+): Promise<void> {
+  await client.query("DELETE FROM event_category_assignments WHERE event_id = $1", [eventId]);
+  const uniqueIds = [...new Set(categoryIds)];
+  if (uniqueIds.length === 0) return;
+  const values = uniqueIds.map((_, i) => `($1, $${i + 2})`).join(", ");
+  await client.query(
+    `INSERT INTO event_category_assignments (event_id, category_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+    [eventId, ...uniqueIds],
+  );
+}
+
 export interface NewEvent {
   countryId: number;
   title: string;
@@ -118,6 +163,7 @@ export interface NewEvent {
   // derived from the submitter's role (admin -> 'approved', regular user ->
   // 'pending').
   status: EventStatus;
+  categoryIds?: number[];
   createdByUserId?: number | null;
 }
 
@@ -143,7 +189,11 @@ export async function createEvent(input: NewEvent): Promise<Event> {
           input.createdByUserId ?? null,
         ],
       );
-      return result.rows[0].id;
+      const id = result.rows[0].id;
+      if (input.categoryIds) {
+        await replaceEventCategories(client, id, input.categoryIds);
+      }
+      return id;
     });
   } catch (err) {
     throw toEventWriteError(err, input.countryId);
@@ -161,6 +211,7 @@ export const MAX_EVENT_LIST_LIMIT = 100;
 
 export interface EventListFilter {
   countryId?: number;
+  categoryId?: number;
   // Tri-state, the same "undefined means no filter" convention as
   // StationListFilter.isActive: the public route (routes/events.ts) always
   // passes 'approved' explicitly; the admin moderation queue leaves this
@@ -181,11 +232,17 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
 
   if (filter.countryId !== undefined) {
     values.push(filter.countryId);
-    conditions.push(`country_id = $${values.length}`);
+    conditions.push(`e.country_id = $${values.length}`);
   }
   if (filter.status !== undefined) {
     values.push(filter.status);
-    conditions.push(`status = $${values.length}`);
+    conditions.push(`e.status = $${values.length}`);
+  }
+  if (filter.categoryId !== undefined) {
+    values.push(filter.categoryId);
+    conditions.push(
+      `EXISTS (SELECT 1 FROM event_category_assignments eca WHERE eca.event_id = e.id AND eca.category_id = $${values.length})`,
+    );
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -201,7 +258,7 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
   // alphabetical catalog like stations - starts_at ASC is the ordering
   // callers actually want, both publicly and in the admin moderation queue.
   const result = await query<EventRow>(
-    `${EVENT_SELECT} ${where} ORDER BY starts_at ASC LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+    `${EVENT_SELECT} ${where} ORDER BY e.starts_at ASC LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
     values,
   );
   const total = result.rows[0] ? Number(result.rows[0].total_count) : 0;
@@ -209,7 +266,7 @@ export async function listEvents(filter: EventListFilter = {}): Promise<EventLis
 }
 
 export async function findEventById(id: number): Promise<Event | null> {
-  const result = await query<EventRow>(`${EVENT_SELECT} WHERE id = $1`, [id]);
+  const result = await query<EventRow>(`${EVENT_SELECT} WHERE e.id = $1`, [id]);
   const row = result.rows[0];
   return row ? toEvent(row) : null;
 }
@@ -224,6 +281,10 @@ export interface EventUpdate {
   imageUrl?: string | null;
   ticketUrl?: string | null;
   status?: EventStatus;
+  // undefined = leave associations untouched; [] = clear them; a
+  // non-empty array = replace them with exactly this set - the same
+  // convention as StationUpdate.genreIds/languageIds.
+  categoryIds?: number[];
 }
 
 export async function updateEvent(id: number, updates: EventUpdate): Promise<Event | null> {
@@ -267,25 +328,44 @@ export async function updateEvent(id: number, updates: EventUpdate): Promise<Eve
     setClauses.push(`status = $${values.length}`);
   }
 
-  if (setClauses.length === 0) {
+  const touchesCategories = updates.categoryIds !== undefined;
+  if (setClauses.length === 0 && !touchesCategories) {
     return findEventById(id);
   }
 
   try {
-    setClauses.push("updated_at = now()");
-    const result = await query(
-      `UPDATE events SET ${setClauses.join(", ")} WHERE id = $${values.length + 1}`,
-      [...values, id],
-    );
-    if ((result.rowCount ?? 0) === 0) {
+    await withTransaction(async (client) => {
+      // Always runs - even a categories-only update bumps updated_at, and
+      // the UPDATE's rowCount is also how a nonexistent event id gets
+      // detected (a categories-only write against a missing id would
+      // otherwise silently no-op instead of surfacing as "not found").
+      setClauses.push("updated_at = now()");
+      const result = await client.query(
+        `UPDATE events SET ${setClauses.join(", ")} WHERE id = $${values.length + 1}`,
+        [...values, id],
+      );
+      if ((result.rowCount ?? 0) === 0) {
+        throw new EventNotFoundSentinel();
+      }
+      if (updates.categoryIds !== undefined) {
+        await replaceEventCategories(client, id, updates.categoryIds);
+      }
+    });
+  } catch (err) {
+    if (err instanceof EventNotFoundSentinel) {
       return null;
     }
-  } catch (err) {
     throw toEventWriteError(err, updates.countryId);
   }
 
   return findEventById(id);
 }
+
+// Internal-only signal from inside the transaction ("the UPDATE matched
+// zero rows") back out to updateEvent's null-return contract - the
+// identical pattern as stationsRepository.StationNotFoundSentinel, never
+// exported alongside the other error classes above.
+class EventNotFoundSentinel extends Error {}
 
 export async function deleteEvent(id: number): Promise<boolean> {
   return withTransaction(async (client) => {

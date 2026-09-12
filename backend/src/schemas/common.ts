@@ -57,3 +57,12 @@ export const languageSchema = {
   },
   required: ["id", "code", "name"],
 } as const;
+
+export const eventCategorySchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    name: { type: "string" },
+  },
+  required: ["id", "name"],
+} as const;
