@@ -16,6 +16,7 @@ import { eventsRoutes } from "./routes/events.js";
 import { eventCategoriesRoutes } from "./routes/eventCategories.js";
 import { genresRoutes } from "./routes/genres.js";
 import { languagesRoutes } from "./routes/languages.js";
+import { voiceRoutes } from "./routes/voice.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
@@ -209,6 +210,7 @@ export function buildApp() {
       v1.register(eventCategoriesRoutes);
       v1.register(genresRoutes);
       v1.register(languagesRoutes);
+      v1.register(voiceRoutes);
     },
     { prefix: "/v1" },
   );

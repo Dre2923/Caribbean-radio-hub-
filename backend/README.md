@@ -218,6 +218,13 @@ is still calling it.
   public route, this never excludes a concluded event by default).
 - `GET /v1/event-categories` — lists the categories an event can be tagged
   with. Public, no auth.
+- `POST /v1/voice/command` — requires authentication. Body: `{ text }`, a
+  transcribed voice command (speech-to-text happens client-side — no
+  audio ever reaches this endpoint). Returns a resolved intent
+  (`play_station`/`play_ranked`/`playback_control`/`ambiguous`/
+  `not_found`/`unrecognized`) plus whatever data that intent needs. Always
+  `200` for a well-formed request, even an unrecognized command — see
+  "Voice System" below. `400` only for a missing/empty `text`.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1434,6 +1441,90 @@ duplicate-detection safeguard, a default "what's upcoming" view, and
 structured/proximity-searchable location — the same "complete a bucket's
 core data model before building the UI/voice/client layers on top of it"
 shape as Stream Reliability (Steps 19-23) before it.
+
+## Voice System
+
+`POST /v1/voice/command` (Step 34, the first of the Voice System bucket,
+Steps 34-38) is the entire backend surface this feature needs. Per
+`docs/ARCHITECTURE_PLAN.md`'s architecture research (sourced, not
+assumed): on-device speech-to-text is the correct low-latency
+architecture — a cloud STT round-trip adds 50–500ms on top of inference
+time, which on-device processing eliminates entirely. That means the
+backend never receives raw audio and needs no paid STT provider
+credential at all; the eventual Flutter client transcribes speech
+on-device and sends only the resulting **text**. This endpoint is the
+complete "intent-out" half of that split: text in, a structured command
+result out.
+
+- **Requires authentication** (`app.authenticate`, any account) — not
+  because a resolved intent is sensitive, but because a genre-only
+  command ("play reggae") is personalized to the caller's own profile
+  `countryId` (the same field `PATCH /v1/me` already exposes), which
+  requires knowing who's asking. A command that already names a country
+  ("play reggae in Jamaica") doesn't need this at all.
+- **Never fails on unrecognized input.** Every call returns `200` with a
+  `message`-carrying `intent` (`not_found`/`ambiguous`/`unrecognized`)
+  instead of a `4xx` — genuinely malformed/garbled speech-to-text output
+  is the expected common case for this endpoint, not an error condition
+  to reject. Only a structurally invalid request body (missing/empty
+  `text`) is `400`.
+- **A deterministic, keyword/phrase-based resolver
+  (`src/voice/commandResolver.ts`), not a machine-learning NLU
+  dependency.** A real, defensible v1 for a domain this bounded: a finite
+  command grammar (play by station name, play a genre in a country, five
+  playback verbs) resolved against this app's own small, real
+  vocabularies (12 genres, 13 countries, the station catalog) doesn't
+  need — and pulling in a general-purpose NLU library or a paid cloud NLU
+  API to classify roughly a dozen intents against a vocabulary this size
+  would be solving a problem this app doesn't have, not meeting a higher
+  standard.
+- **Country/genre name matching tolerates this app's own real spelling
+  variation** ("St. Lucia" vs "Saint Lucia", "Trinidad" alone matching
+  "Trinidad & Tobago", "the Bahamas") via light, deliberately
+  narrow normalization — not a general fuzzy-matching library, just
+  enough for the specific 13 country names and 12 genre names this app
+  seeds. Filler words ("play music/something/radio in Jamaica") resolve
+  to "no genre preference," not an unrecognized genre.
+- **A station-name match always wins over a genre-only fallback** when a
+  bare "play X" phrase could be read either way (e.g. a station literally
+  named "... News" when the caller says "play news") — an unambiguous
+  match against a real, specific, named entity is a stronger signal of
+  intent than a generic category word, the same precedence a real voice
+  assistant applies.
+- **Playback control (pause/resume/stop/next/previous) resolves to a bare
+  intent with no data** — the backend holds no server-side "now playing"
+  state to act on (that's the Flutter client's own audio session, Steps
+  46-50); this endpoint's only job for those five verbs is classifying
+  which one was spoken, so the client acts on its own local state
+  immediately.
+- **Ambiguous station-name matches ask for clarification** rather than
+  guessing: `GET /v1/stations`'s substring search can return more than
+  one hit for a short/common phrase, and the response's `intent:
+  "ambiguous"` plus `candidates` lets the client ask "which one?" instead
+  of silently picking one.
+
+No migration, no new schema — this is pure orchestration over
+already-existing capabilities: `GET /v1/stations`'s search (Step 14) for
+play-by-name, and `GET /v1/stations/ranked`'s reliability ranking (Step
+22) for play-by-genre-in-country, with the genre filter applied in
+application code over the already-ranked list so the fallback-chain order
+(best-first) is preserved exactly.
+
+Verified: clean build and lint (no migration to cycle this step); the
+full 286-test suite (14 new) passing three consecutive runs; `npm audit`
+clean; proven to actually catch two real bugs by temporarily (a) removing
+the in-application genre filter over the ranked list and watching a
+wrong-genre station wrongly appear in the result, and (b) removing the
+"St." → "Saint " country-alias normalization and watching "play reggae in
+St Lucia" wrongly fail to resolve the country at all, in both cases
+restoring immediately and confirming a byte-identical diff against the
+pre-bug backup; and a live-server run covering every intent - playback
+control verbs, an exact station-name match, a genre-in-country match
+against a real freshly-created station, that same query correctly
+`not_found` before the station existed, an unresolvable country name,
+disambiguating between two real stations whose names both matched a
+search term, and a completely unrecognized phrase - with all live test
+data deleted afterward.
 
 ## Security baseline
 
