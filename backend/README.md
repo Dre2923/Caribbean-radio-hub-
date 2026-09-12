@@ -674,10 +674,10 @@ as every other station-catalog write - triggering a real outbound network
 request on the caller's behalf is not something any authenticated user
 should be able to do.
 
-**Automatic, recurring checks across the whole catalog on a schedule are a
-later step in this bucket** - this step is the manual-trigger primitive
-everything else builds on, proven to work end-to-end before anything gets
-automated on top of it.
+Automatic, recurring checks across the whole catalog on a schedule are
+Step 20, below - this step is the manual-trigger primitive everything else
+builds on, proven to work end-to-end before anything gets automated on top
+of it.
 
 Verified with real due diligence, not mocks: `tests/streamHealthCheck.test.ts`
 runs the check function against real local HTTP servers - a genuinely
@@ -698,6 +698,64 @@ unreachable real domain (a real DNS/connection failure, not a simulated
 one) and a real local server stood up specifically to be reached - both
 recorded correctly, with the history endpoint returning both in the right
 order.
+
+### Automatic health checks (Step 20)
+
+The background counterpart to Step 19's manual trigger, and what actually
+makes "that day's" reliability signal real rather than something an admin
+has to remember to ask for. `startHealthCheckWorker`
+(`src/stationHealth/healthCheckWorker.ts`) is started and gracefully
+stopped alongside the HTTP server and the existing email outbox worker in
+`index.ts` — the identical lifecycle pattern: an `unref()`'d interval, a
+returned stop function called on `SIGINT`/`SIGTERM`.
+
+The worker is deliberately two layers, not one:
+
+- **`sweepStations(targets)`** — the actual logic. Concurrency-limited (5
+  at a time, a small fixed worker pool pulling from a shared index — no new
+  dependency needed for something this simple), so a growing catalog can
+  never fire hundreds of simultaneous outbound requests at once. Guarded
+  against overlap: a module-level flag means a slow sweep can never run
+  concurrently with the next scheduled tick, so the same station never gets
+  double-checked at once. Each station's own database-write failure is
+  isolated (caught and logged) so it can never stop the rest of the sweep.
+- **`runHealthCheckSweep()`** — a one-line composition of `sweepStations`
+  with `listActiveStationsForHealthCheck` (`stationsRepository.ts`), a new,
+  deliberately lightweight query: id and `streamUrl` only, no genre/
+  language joins or pagination overhead, active stations only (an
+  inactive/curated-off station doesn't need automatic monitoring — an admin
+  can still check one manually via Step 19's endpoint, which never filters
+  on `isActive`).
+
+New config: `STATION_HEALTH_CHECK_INTERVAL_MS` (default 5 minutes) —
+deliberately much longer than the email outbox's 10-second poll, since
+every tick makes a real outbound request to a real third-party server and
+this needs to be a good network citizen, not just fast.
+
+**Found and fixed during this step's own test-writing, not hypothetically:**
+the first version of the worker's test called `runHealthCheckSweep()`
+directly against the real, shared local test database — which, per Step
+18's own finding, has accumulated well over a thousand stations across
+this build's repeated local test runs — and the test genuinely timed out
+sweeping all of them. Root-caused immediately this time (recognized the
+same class of issue on sight, not rediscovered slowly) and fixed by the
+`sweepStations`/`runHealthCheckSweep` split described above, so tests
+exercise the real concurrency/overlap/error-isolation logic against a
+small, controlled target list without ever depending on the shared
+catalog's size — the identical lesson as Step 18's fix, this time applied
+proactively to new code instead of reactively to a failure.
+
+Verified: clean build and lint; the full 170-test suite
+(`tests/healthCheckWorker.test.ts`, 4 new) passing three consecutive runs;
+`npm audit` clean; proven to actually catch a bug, not just pass by
+construction, by temporarily disabling the overlap guard and the
+active-only filter and watching the exact two tests that check those
+behaviors fail (2 concurrent checks recorded instead of 1; an inactive
+station included instead of excluded) before restoring both; and a
+live-server run with a shortened interval
+(`STATION_HEALTH_CHECK_INTERVAL_MS=3000`) confirming a station that was
+never manually checked accumulated automatic health-check records entirely
+on its own within a few seconds, with no admin action at all.
 
 ## Security baseline
 

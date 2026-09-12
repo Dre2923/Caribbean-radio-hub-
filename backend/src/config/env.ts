@@ -140,6 +140,15 @@ export const env = {
   // How often the email outbox worker (src/email/outboxWorker.ts) polls
   // for pending emails to send.
   emailOutboxIntervalMs: Number(process.env.EMAIL_OUTBOX_INTERVAL_MS ?? 10_000),
+  // How often the stream health-check worker (src/stationHealth/
+  // healthCheckWorker.ts) sweeps the whole active catalog. Deliberately
+  // much longer than the email outbox's poll interval: each tick makes a
+  // real outbound network request to every active station's own
+  // third-party stream server, so this needs to be a good network
+  // citizen, not just fast - 5 minutes by default is frequent enough for
+  // a "that day's" reliability signal without hammering real stations
+  // unnecessarily.
+  stationHealthCheckIntervalMs: Number(process.env.STATION_HEALTH_CHECK_INTERVAL_MS ?? 300_000),
   frontendUrl: frontendUrl(),
   adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
 };

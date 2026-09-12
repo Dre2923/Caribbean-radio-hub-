@@ -341,6 +341,28 @@ export async function findStationById(id: number): Promise<Station | null> {
   return row ? toStation(row) : null;
 }
 
+export interface StationHealthCheckTarget {
+  id: number;
+  streamUrl: string;
+}
+
+// Step 20: the background health-check worker's own listing query -
+// deliberately not listStations()/STATION_SELECT. A sweep across the whole
+// catalog only ever needs a station's id and streamUrl, never its
+// genres/languages (the two json_agg subqueries) or the pagination
+// COUNT(*) OVER() - fetching those for every row on every sweep tick would
+// be pure overhead for a query that could run frequently and touch the
+// entire catalog. Only active stations: a deactivated one doesn't need
+// automatic monitoring (an admin can still check it manually via
+// POST /v1/admin/stations/:id/health-check, which never filters on
+// isActive).
+export async function listActiveStationsForHealthCheck(): Promise<StationHealthCheckTarget[]> {
+  const result = await query<{ id: number; stream_url: string }>(
+    "SELECT id, stream_url FROM radio_stations WHERE is_active = true",
+  );
+  return result.rows.map((row) => ({ id: row.id, streamUrl: row.stream_url }));
+}
+
 export interface StationUpdate {
   countryId?: number;
   name?: string;

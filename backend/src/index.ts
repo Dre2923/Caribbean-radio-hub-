@@ -3,6 +3,7 @@ import { env } from "./config/env.js";
 import { logger } from "./utils/logger.js";
 import { createEmailProvider } from "./email/provider.js";
 import { startEmailOutboxWorker } from "./email/outboxWorker.js";
+import { startHealthCheckWorker } from "./stationHealth/healthCheckWorker.js";
 
 const app = buildApp();
 
@@ -11,6 +12,11 @@ const app = buildApp();
 // Started alongside the server and stopped on the same graceful-shutdown
 // path so nothing leaks a dangling timer or a mid-send connection.
 const stopEmailOutboxWorker = startEmailOutboxWorker(createEmailProvider());
+
+// Likewise independent of the HTTP server - periodically checks every
+// active station's own stream, the automatic counterpart to Step 19's
+// manual POST /v1/admin/stations/:id/health-check.
+const stopHealthCheckWorker = startHealthCheckWorker();
 
 // Fastify's own logger already announces the listening address(es) once
 // the server is up, so there's no need to log that again here.
@@ -24,6 +30,7 @@ app
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully`);
   stopEmailOutboxWorker();
+  stopHealthCheckWorker();
   await app.close();
   process.exit(0);
 }
