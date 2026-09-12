@@ -81,6 +81,51 @@ export function parseSmtpConfig(
   };
 }
 
+export interface FcmEnvConfig {
+  projectId: string;
+  clientEmail: string;
+  privateKey: string;
+}
+
+// Step 53: the real push-notification provider's credential, following the
+// identical "undefined means not configured, callers do `if (env.fcm)` to
+// choose real vs. dev-safe" shape as parseSmtpConfig above - see
+// src/notifications/provider.ts. A Firebase service-account key is
+// normally distributed as a downloaded JSON file; since many hosting
+// platforms have no convenient way to mount a file, the whole JSON is
+// pasted into one env var (FCM_SERVICE_ACCOUNT_JSON) rather than splitting
+// it into several separate variables - the standard way to carry this
+// exact credential shape on a platform like Heroku/Render/Fly.
+export function parseFcmConfig(
+  source: Record<string, string | undefined> = process.env,
+): FcmEnvConfig | undefined {
+  const raw = source.FCM_SERVICE_ACCOUNT_JSON;
+  if (!raw) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("FCM_SERVICE_ACCOUNT_JSON is not valid JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("FCM_SERVICE_ACCOUNT_JSON must be a JSON object");
+  }
+  const { project_id, client_email, private_key } = parsed as Record<string, unknown>;
+  if (
+    typeof project_id !== "string" ||
+    typeof client_email !== "string" ||
+    typeof private_key !== "string"
+  ) {
+    throw new Error(
+      "FCM_SERVICE_ACCOUNT_JSON is missing project_id/client_email/private_key " +
+        "(paste the full service-account JSON key downloaded from the Firebase console)",
+    );
+  }
+  return { projectId: project_id, clientEmail: client_email, privateKey: private_key };
+}
+
 // Used to build the actual link inside the password-reset email. Required
 // in production (no silent guess about where the frontend lives); defaults
 // to a typical local dev server address otherwise so the flow works
@@ -161,4 +206,5 @@ export const env = {
   ),
   frontendUrl: frontendUrl(),
   adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
+  fcm: parseFcmConfig(),
 };

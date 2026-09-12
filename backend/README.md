@@ -258,6 +258,18 @@ is still calling it.
   hard-deleted station appears with `station: null`.
 - `DELETE /v1/me/listening-history` — requires authentication. Permanently
   clears the caller's entire listening history.
+- `POST /v1/me/push-tokens` — requires authentication. Body:
+  `{ token, platform }` (`platform` is `android`/`ios`/`windows`).
+  Registers a device push token for the caller. Idempotent — registering a
+  token that's already known overwrites its owner/platform rather than
+  erroring, since a device can be re-registered on refresh or under a
+  different account. See "User Features" below.
+- `GET /v1/me/push-tokens` — requires authentication. Lists the caller's
+  registered devices, most-recently-refreshed first. Same pagination as
+  favorites/listening-history.
+- `DELETE /v1/me/push-tokens` — requires authentication. Body:
+  `{ token }`. Un-registers a device push token for the caller (e.g. on
+  logout). Idempotent.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1881,6 +1893,109 @@ contrast to Step 51's favorites list), a hard-deleted station's history
 entries preserved with `station: null`, and clearing one account's history
 leaving another account's completely untouched — with all live test data
 deleted afterward.
+
+### Push notifications (Step 53)
+
+The third step of the User Features bucket: the device push-token
+registry, and the `PushProvider` abstraction the eventual sending side
+will call, following the exact provider-abstraction pattern the "common
+language" contract (`docs/ARCHITECTURE_PLAN.md` Section 1) already
+established for email — a real interface plus a dev-safe default that
+needs no credentials, chosen by whether the relevant credential env var is
+set, with a loud startup warning when running on the dev-safe default.
+Per the architecture plan's own sourced research: the standard, secure
+push-notification architecture is `client → backend → FCM HTTP v1 API →
+device` (Android direct, iOS via APNs, both through the same FCM API),
+with the real service-account credential living only on the server, never
+the client, and a device-token registry on the backend that overwrites on
+every client-reported refresh — FCM tokens rotate on reinstall/restore, so
+a stale registration must never linger silently.
+
+- **`push_tokens`** (migration `1700000021000_push_tokens`) is a plain
+  table with a database-level `UNIQUE` constraint on `token`, not a
+  junction table like Step 51's favorites — a physical device's FCM token
+  identifies one specific app installation, which belongs to exactly one
+  account's session at a time, never two simultaneously. `registerPushToken`
+  (`pushTokensRepository.ts`) is therefore a real upsert
+  (`ON CONFLICT (token) DO UPDATE`), not a plain insert: re-registering an
+  already-known token — the client's own periodic refresh, or a different
+  account now signed in on the same physical device — overwrites
+  `user_id`/`platform` and bumps `updated_at`, rather than erroring on the
+  uniqueness constraint. Verified directly: the same token registered
+  under a second account correctly disappears from the first account's
+  list and appears in the second's.
+- **`PushProvider`** (`src/notifications/types.ts`) is the one interface
+  every future call site depends on — never a specific vendor's SDK, the
+  identical role `EmailProvider` already plays for email.
+  `ConsoleNotificationProvider` is the dev-safe default (logs instead of
+  sending, exactly like `ConsoleEmailProvider`); `FcmPushProvider` is the
+  real implementation, selected by `createPushProvider()` whenever
+  `FCM_SERVICE_ACCOUNT_JSON` is set (the full service-account JSON key
+  downloaded from the Firebase console, pasted into one env var — the
+  standard way to carry this credential shape on a platform with no
+  convenient way to mount a file), with the identical loud
+  "no real provider configured" startup warning `createEmailProvider`
+  already gives.
+- **`FcmPushProvider` implements Google's own documented OAuth2 flow for a
+  service account** (verified live against Firebase's current
+  documentation during this step's research, not assumed from memory):
+  sign a short-lived JWT (RS256, using the service account's own RSA
+  private key — Node's built-in `crypto`, no Firebase Admin SDK dependency
+  needed) with the standard claims (`iss`/`sub` = the service account
+  email, `scope` = `https://www.googleapis.com/auth/firebase.messaging`,
+  `aud` = `https://oauth2.googleapis.com/token`), exchange it for an
+  access token via Google's "JWT Bearer Token" grant, then call
+  `https://fcm.googleapis.com/v1/projects/{projectId}/messages:send` with
+  that access token as a Bearer credential. The access token is cached in
+  memory and refreshed 60 seconds before its real 1-hour expiry, rather
+  than re-exchanged on every single notification.
+- **A stale/invalid token is a distinct, catchable error from a transient
+  provider failure.** FCM reports an unregistered or malformed token as a
+  `404`/`400`; `FcmPushProvider` maps either to `InvalidPushTokenError` (a
+  future notification-sending step's signal to delete that
+  `push_tokens` row rather than retry it) instead of a generic send
+  failure (`FcmSendError`), which is reserved for an actual provider-side
+  problem.
+- **No real FCM credential exists in this environment to send an actual
+  live push notification against** (no Firebase project, no service
+  account) — the identical honest limitation already true of the SMTP
+  email provider in this sandbox. `FcmPushProvider`'s correctness (the
+  JWT's exact shape and a real, independently-verified RS256 signature;
+  the OAuth exchange and FCM send request shapes; the access-token cache;
+  every error-mapping branch) is proven via unit tests against an injected
+  `fetch` mock (`FetchLike`, dependency-injected the same way
+  `createEmailProvider`/background workers already take their
+  configuration as a parameter) rather than a real network call — the
+  live-server verification below covers the token-registry API itself and
+  the dev-safe `ConsoleNotificationProvider` path.
+- **Not yet wired to any actual send trigger.** This step deliberately
+  scopes to the registry and the provider abstraction only, per
+  `docs/ARCHITECTURE_PLAN.md`'s own description of this piece of the User
+  Features bucket — deciding *when* to notify a user (a future event in a
+  favorited category, a followed station coming back online, etc.) is a
+  real feature decision for a later step in this bucket, not invented
+  speculatively here just because the sending mechanism now exists.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 350-test suite (21 new, split between
+`tests/pushTokens.test.ts`'s real-API integration tests and
+`tests/pushNotifications.test.ts`'s provider unit tests — including a
+real RSA key pair generated at test time to independently verify the
+JWT's signature actually validates, not just that it's well-shaped JSON)
+passing three consecutive runs; `npm audit` clean; proven to actually
+catch a real bug by temporarily narrowing `FcmPushProvider`'s
+stale-token detection from `404 || 400` to `404` only and watching the
+exact test that checks the `400`/malformed-token case fail (surfacing as
+the wrong error class, `FcmSendError` instead of `InvalidPushTokenError`)
+before restoring it and confirming a byte-identical diff against the
+pre-bug backup; and a live-server run against a running compiled server
+covering the token registry end-to-end — `401` with no token, `400` for
+an invalid `platform`, a real token registered and listed, idempotent
+re-registration correctly refreshing `updatedAt`, the same token
+re-registered under a second account correctly transferring ownership
+(disappearing from the first account's list, appearing in the second's),
+and idempotent un-registration — with all live test data deleted
+afterward.
 
 ## Security baseline
 

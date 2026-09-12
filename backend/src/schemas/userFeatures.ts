@@ -4,6 +4,14 @@
 
 import { stationSchema } from "./stations.js";
 import { eventSchema } from "./events.js";
+import { PUSH_PLATFORMS } from "../repositories/pushTokensRepository.js";
+
+// A generous, deliberately-bounded cap on a registered push token's
+// length - real FCM tokens run well under this, but this endpoint accepts
+// arbitrary client-supplied text, so the same "assume every input is
+// hostile" standard applied to every other free-text field in this API
+// applies here too.
+export const MAX_PUSH_TOKEN_LENGTH = 4096;
 
 // Each favorite is its own object wrapping the full resource plus when it
 // was favorited, rather than bolting a favoritedAt field onto stationSchema/
@@ -41,4 +49,36 @@ export const listeningHistoryEntrySchema = {
     listenedAt: { type: "string", format: "date-time" },
   },
   required: ["id", "station", "listenedAt"],
+} as const;
+
+// Step 53: a registered device push token.
+export const pushTokenSchema = {
+  type: "object",
+  properties: {
+    id: { type: "integer" },
+    token: { type: "string" },
+    platform: { type: "string", enum: [...PUSH_PLATFORMS] },
+    createdAt: { type: "string", format: "date-time" },
+    updatedAt: { type: "string", format: "date-time" },
+  },
+  required: ["id", "token", "platform", "createdAt", "updatedAt"],
+} as const;
+
+export const createPushTokenBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["token", "platform"],
+  properties: {
+    token: { type: "string", minLength: 1, maxLength: MAX_PUSH_TOKEN_LENGTH },
+    platform: { type: "string", enum: [...PUSH_PLATFORMS] },
+  },
+} as const;
+
+export const deletePushTokenBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["token"],
+  properties: {
+    token: { type: "string", minLength: 1, maxLength: MAX_PUSH_TOKEN_LENGTH },
+  },
 } as const;
