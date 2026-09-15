@@ -121,3 +121,24 @@ export async function listPushTokens(
   const total = result.rows[0] ? Number(result.rows[0].total_count) : 0;
   return { pushTokens: result.rows.map(toPushToken), total };
 }
+
+// Step 54: the send-side registry lookup the favorite-station-availability
+// notifier (and any future notification fan-out) needs - given a set of
+// user ids, every currently-registered token across all of them, in one
+// round trip rather than one query per user.
+export async function listPushTokensForUsers(userIds: number[]): Promise<PushToken[]> {
+  if (userIds.length === 0) return [];
+  const result = await query<PushTokenRow>(
+    "SELECT id, token, platform, created_at, updated_at FROM push_tokens WHERE user_id = ANY($1)",
+    [userIds],
+  );
+  return result.rows.map(toPushToken);
+}
+
+// Used when a provider reports a token as permanently invalid
+// (InvalidPushTokenError) - deletes by the row's own id (already known to
+// the caller from the same listPushTokensForUsers call) rather than
+// needing the owning user_id too.
+export async function deletePushTokenById(id: number): Promise<void> {
+  await query("DELETE FROM push_tokens WHERE id = $1", [id]);
+}

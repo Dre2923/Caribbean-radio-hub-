@@ -131,6 +131,21 @@ export async function listFavoriteStations(
   return { favorites, total: Number(result.rows[0].total_count) };
 }
 
+// Step 54: the reverse of listFavoriteStations - given a station, every
+// user who currently has it favorited. Backs the favorite-station-
+// availability push notification fan-out
+// (favoriteStationAvailabilityNotifier.ts): unlike listFavoriteStations,
+// this deliberately doesn't filter by the station's own is_active (the
+// whole point is finding out who to notify *when* that value changes,
+// including the exact call where it just flipped to false).
+export async function listStationFavoriterUserIds(stationId: number): Promise<number[]> {
+  const result = await query<{ user_id: number }>(
+    "SELECT user_id FROM user_favorite_stations WHERE station_id = $1",
+    [stationId],
+  );
+  return result.rows.map((row) => row.user_id);
+}
+
 export async function addFavoriteEvent(userId: number, eventId: number): Promise<void> {
   try {
     await query(

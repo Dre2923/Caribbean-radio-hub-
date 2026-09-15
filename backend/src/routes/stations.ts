@@ -13,6 +13,7 @@ import {
   InvalidGenreError,
   InvalidLanguageError,
 } from "../repositories/stationsRepository.js";
+import { notifyFavoriteStationAvailabilityChange } from "../notifications/favoriteStationAvailabilityNotifier.js";
 import { errorResponseSchema } from "../schemas/common.js";
 import {
   createStationBodySchema,
@@ -215,10 +216,22 @@ async function updateStationHandler(
       "deactivationReason is only valid together with isActive: false in the same request",
     );
   }
+  // Fetched before the write so a genuine isActive flip can be detected
+  // afterward (a redundant PATCH { isActive: false } on an already-inactive
+  // station must never re-notify every user who favorited it) - Step 54's
+  // notification trigger, see favoriteStationAvailabilityNotifier.ts.
+  const previousStation = await findStationById(request.params.id);
   try {
     const station = await updateStation(request.params.id, request.body, request.user.sub);
     if (!station) {
       return stationNotFound(reply);
+    }
+    if (
+      previousStation &&
+      request.body.isActive !== undefined &&
+      previousStation.isActive !== station.isActive
+    ) {
+      await notifyFavoriteStationAvailabilityChange(station.id, station.name, station.isActive);
     }
     return { station };
   } catch (err) {

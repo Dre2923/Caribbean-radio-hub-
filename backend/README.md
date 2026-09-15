@@ -270,6 +270,13 @@ is still calling it.
 - `DELETE /v1/me/push-tokens` — requires authentication. Body:
   `{ token }`. Un-registers a device push token for the caller (e.g. on
   logout). Idempotent.
+- `GET /v1/me/notification-preferences` — requires authentication. Returns
+  the caller's notification preferences (currently one:
+  `favoriteStationAvailabilityChanges`, default `true`). See "User
+  Features" below.
+- `PATCH /v1/me/notification-preferences` — requires authentication. Body:
+  `{ favoriteStationAvailabilityChanges? }`, at least one field. Updates
+  only the fields present.
 
 Full interactive API docs (OpenAPI 3, generated from the route schemas
 below) are served at `/docs` outside production, or when `ENABLE_API_DOCS=true`
@@ -1996,6 +2003,95 @@ re-registered under a second account correctly transferring ownership
 (disappearing from the first account's list, appearing in the second's),
 and idempotent un-registration — with all live test data deleted
 afterward.
+
+### Notification preferences and the favorite-station-availability trigger (Step 54)
+
+The fourth step of the User Features bucket: notification preferences,
+and — per `docs/ARCHITECTURE_PLAN.md`'s own description of this piece of
+the bucket — the first real trigger for Step 53's `PushProvider`, wiring
+together three features already built (favorites, push tokens, the
+provider abstraction) into one concrete, working notification: a user is
+notified the moment a station they favorited becomes unavailable or comes
+back.
+
+- **`notification_preferences`** (migration
+  `1700000022000_notification_preferences`) is a one-row-per-user table
+  (`user_id` itself is the primary key, not a separate serial id — there's
+  exactly one preferences row per account by definition, the same
+  "profile extension, not a many-to-many relationship" shape as `users`
+  itself). No row is created at registration; `GET
+  /v1/me/notification-preferences` returns the default
+  (`favoriteStationAvailabilityChanges: true`) for any account that's
+  never customized it, and `PATCH` creates the row lazily (upsert) on
+  first customization — "never set" and "explicitly set to the default"
+  are deliberately indistinguishable from the outside, the simplest
+  correct contract for a feature with exactly one preference so far.
+- **The trigger point is a real, existing state transition, not a new
+  hook invented for this feature.** `updateStation`
+  (`stationsRepository.ts`) is the single choke point every `isActive`
+  change already passes through — both a human admin's
+  `PATCH /v1/stations/:id` and the automatic stream-reliability monitor
+  (`stationHealth/autoDeactivationWorker.ts`, Step 23) call it — so
+  `notifyFavoriteStationAvailabilityChange`
+  (`src/notifications/favoriteStationAvailabilityNotifier.ts`) is called
+  from both of those call sites right after a successful update,
+  keeping the repository layer itself a pure data-access function with no
+  new side effects mixed in.
+- **Only a genuine flip triggers a notification, never a redundant
+  write.** `routes/stations.ts` fetches the station before the update
+  specifically to compare its previous `isActive` against the new value —
+  a repeated `PATCH { isActive: false }` on an already-inactive station
+  correctly notifies nobody a second time. The automatic monitor needs no
+  such check: every station it ever touches came from
+  `listActiveStationsForHealthCheck` (active-only), so a successful call
+  there is always a genuine true→false transition by construction.
+- **Every recipient is filtered through two independent gates before a
+  single push is attempted**: `listNotificationPreferencesForUsers`
+  (a user who opted out of `favoriteStationAvailabilityChanges` is
+  skipped entirely) and `listPushTokensForUsers` (a user with no
+  registered device has nothing to send to). Every remaining token is
+  sent to independently and in parallel, with per-token error isolation —
+  the identical reasoning already applied to Step 20's `sweepStations`:
+  one dead device must never stop the notification from reaching everyone
+  else who favorited the same station.
+- **A provider-reported stale token cleans itself up.** When
+  `FcmPushProvider` (or any future `PushProvider`) raises
+  `InvalidPushTokenError` for a specific send, the notifier deletes that
+  exact `push_tokens` row (by its own id) rather than leaving a dead
+  registration to fail the same way on every future notification.
+- **The entire fan-out is a best-effort side effect, never a reason to
+  fail the station update itself.** Every layer — a single token's send,
+  the whole fan-out — is wrapped so a failure here is logged and
+  swallowed, never propagated back to the `PATCH /v1/stations/:id`
+  caller. This is the same "a component that can degrade gracefully
+  should, rather than propagating a hard crash" standard already applied
+  throughout this build's background workers, verified directly: the live
+  server run below confirms the update's own `200` response is unaffected
+  either way.
+- **A verified, incidental confirmation, not a new mechanism**: the
+  registered device token in the live-server run's own log output for a
+  sent notification came back `"token":"[redacted]"` — the existing
+  wildcard field-name redaction (Step 04, "Observability" below) already
+  covers any field literally named `token` anywhere in a log line,
+  including this new one, with no additional configuration needed.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 361-test suite (11 new, split between
+`tests/notificationPreferences.test.ts`'s API tests and
+`tests/favoriteStationAvailabilityNotifier.test.ts`'s notifier tests
+against a fake, dependency-injected `PushProvider`) passing three
+consecutive runs; `npm audit` clean; proven to actually catch a real bug
+by temporarily removing the opt-out preference filter from the notifier
+and watching the exact test that checks an opted-out user is skipped fail
+(they were wrongly notified anyway) before restoring it and confirming a
+byte-identical diff against the pre-bug backup; and a live-server run
+against a running compiled server — favoriting a real station, registering
+a real push token, confirming the default preference is `true`,
+deactivating the station as an admin and confirming both the `200`
+response and a correctly-titled/bodied "unavailable" notification in the
+server's own log output, a redundant repeat `PATCH` correctly producing no
+second notification, and reactivating correctly producing a "back"
+notification — all live test data deleted afterward.
 
 ## Security baseline
 

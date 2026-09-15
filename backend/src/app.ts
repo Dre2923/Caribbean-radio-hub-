@@ -20,6 +20,7 @@ import { voiceRoutes } from "./routes/voice.js";
 import { favoritesRoutes } from "./routes/favorites.js";
 import { listeningHistoryRoutes } from "./routes/listeningHistory.js";
 import { pushTokensRoutes } from "./routes/pushTokens.js";
+import { notificationPreferencesRoutes } from "./routes/notificationPreferences.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
@@ -217,6 +218,7 @@ export function buildApp() {
       v1.register(favoritesRoutes);
       v1.register(listeningHistoryRoutes);
       v1.register(pushTokensRoutes);
+      v1.register(notificationPreferencesRoutes);
     },
     { prefix: "/v1" },
   );

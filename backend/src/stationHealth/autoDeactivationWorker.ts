@@ -1,5 +1,6 @@
 import { listActiveStationsForHealthCheck, updateStation } from "../repositories/stationsRepository.js";
 import { getStationReliability, type StationReliability } from "../repositories/stationHealthRepository.js";
+import { notifyFavoriteStationAvailabilityChange } from "../notifications/favoriteStationAvailabilityNotifier.js";
 import { logger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 
@@ -67,7 +68,7 @@ export async function evaluateStationsForAutoDeactivation(stationIds: number[]):
           // specifically to support this), so an admin reviewing curated-
           // off stations can immediately tell an automatic deactivation
           // apart from one they or a colleague made by hand.
-          await updateStation(
+          const deactivatedStation = await updateStation(
             stationId,
             { isActive: false, deactivationReason: buildAutoDeactivationReason(reliability) },
             null,
@@ -77,6 +78,14 @@ export async function evaluateStationsForAutoDeactivation(stationIds: number[]):
             totalChecks: reliability.totalChecks,
             windowHours: reliability.windowHours,
           });
+          // Every station this loop touches came from
+          // listActiveStationsForHealthCheck (active-only), so a
+          // successful deactivation here is always a genuine true->false
+          // transition - no "was this already inactive" check needed the
+          // way routes/stations.ts's own call site needs one.
+          if (deactivatedStation) {
+            await notifyFavoriteStationAvailabilityChange(stationId, deactivatedStation.name, false);
+          }
         }
       } catch (err) {
         logger.error("Auto-deactivation evaluation failed for a station", {

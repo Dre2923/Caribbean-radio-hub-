@@ -82,3 +82,23 @@ export const deletePushTokenBodySchema = {
     token: { type: "string", minLength: 1, maxLength: MAX_PUSH_TOKEN_LENGTH },
   },
 } as const;
+
+// Step 54: notification preferences. A single boolean today - the schema
+// grows the same additive way every other feature in this API does as
+// more preference types are added, never a breaking reshape.
+export const notificationPreferencesSchema = {
+  type: "object",
+  properties: {
+    favoriteStationAvailabilityChanges: { type: "boolean" },
+  },
+  required: ["favoriteStationAvailabilityChanges"],
+} as const;
+
+export const updateNotificationPreferencesBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  minProperties: 1,
+  properties: {
+    favoriteStationAvailabilityChanges: { type: "boolean" },
+  },
+} as const;
