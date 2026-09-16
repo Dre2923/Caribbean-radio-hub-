@@ -2523,6 +2523,115 @@ account registering exactly 20 push tokens successfully, a 21st correctly
 rejected with `409`, and a re-registration of the very first token still
 succeeding at the cap — all live test data deleted afterward.
 
+### OWASP API Security Top 10 audit completion (Step 59)
+
+Completes the systematic, sourced OWASP API Security Top 10 audit Step 58
+began — the five items not yet explicitly covered (API1, API2, API3, API5,
+API9), each checked against real code and, where OWASP's own current
+guidance was consulted live rather than recalled, cited. One real gap
+found and fixed; four items verified genuinely clean, each recorded as a
+real result in its own right rather than a silent assumption.
+
+**API5:2023 — Broken Function Level Authorization (verified clean).**
+Every route registration in this API (57 across 18 route files) was
+mechanically enumerated and its `preHandler` array inspected — every
+single `/admin/...` route requires both `app.authenticate` and
+`app.requireAdmin`, with no exceptions and no accidental gaps. The first
+extraction attempt used a fixed-size text window after each route
+declaration and produced a false negative (`GET /v1/admin/users` looked
+unguarded) purely because a multi-line comment pushed the real
+`preHandler` line past the window — corrected to a proper bracket-depth
+parse of each route's full options object before trusting the result, the
+same "don't trust an unverified detection heuristic in a security audit"
+discipline as everywhere else in this build.
+
+**API1:2023 — Broken Object Level Authorization (verified clean).** Every
+user-owned mutation (favorites, push tokens, listening history,
+notification preferences) filters by `request.user.sub` directly in its
+own `WHERE` clause, confirmed by reading every `UPDATE`/`DELETE` statement
+across those four repositories. The one function scoped by row id alone
+(`deletePushTokenById`) is never reachable from any HTTP route with
+caller-supplied input — its only call site is the internal favorite-
+station-availability notifier cleaning up a stale token it already looked
+up itself (Step 54) — so no caller-controlled BOLA surface exists there
+either.
+
+**API3:2023 — Broken Object Property Level Authorization (verified
+clean).** Mass assignment is the same protection Step 55 already
+investigated and confirmed (Fastify's `removeAdditional: true` silently
+strips any field outside a schema's declared `properties`, this
+codebase's own deliberate defense). Excessive data exposure: no response
+schema anywhere references `passwordHash`, and no repository query uses
+`SELECT *` — every query explicitly lists its columns, confirmed by
+grepping the full repository layer, so no query can silently start
+returning a newly-added sensitive column just because a migration added
+one.
+
+**API9:2023 — Improper Inventory Management (verified clean).** Every
+route module is registered under the versioned `/v1` prefix in `app.ts`
+except `healthRoutes`/`metricsRoutes`, both deliberately and consistently
+unversioned per the same industry convention already established for
+infrastructure endpoints (Step 58) — no stray or duplicate registrations
+exist outside that one documented exception. The OpenAPI spec
+(`ENABLE_API_DOCS`) is live-generated from the exact same schema objects
+used for real request validation, not a hand-maintained document that
+could drift from the real API surface.
+
+**API2:2023 — Broken Authentication (real gap found and fixed).**
+OWASP's own current guidance for this category, checked live rather than
+recalled, explicitly names "changing the account owner email address" as
+a sensitive operation that should require re-authentication — this
+backend already applies exactly that requirement to `POST /me/password`
+and `DELETE /me` (both require the current password), but `PATCH /me`
+let email — the account's own password-reset destination — change with
+nothing but a valid JWT. A stolen or leaked token (XSS, a compromised
+device, a leaked log line) could otherwise silently redirect an account's
+recovery email to one an attacker controls, then request a password reset
+to complete a full takeover, permanently locking out the real owner.
+Fixed by requiring `currentPassword` in the same request whenever `email`
+is present in the body, verified via the identical `verifyPassword`
+pattern `POST /me/password`/`DELETE /me` already use — `displayName`/
+`countryId` remain unaffected, since neither is security-sensitive.
+Every other item on OWASP's own API2 checklist was checked against this
+codebase and found already handled: standard libraries only (`@fastify/jwt`,
+`bcrypt` — no custom crypto), credential-recovery endpoints already
+rate-limited identically to login (5/min), no API-key-based user auth.
+Multi-factor authentication was investigated and deliberately deferred,
+not silently skipped: it would be a substantial new feature needing a
+real client to configure/prompt for it, and this backend's mobile client
+doesn't exist yet (Steps 39-50 remain a specification) — building unused
+MFA infrastructure ahead of an actual consumer would be exactly the kind
+of speculative building this project's own standards argue against
+elsewhere (`docs/ARCHITECTURE_PLAN.md`'s SOC 2/pen-testing decision).
+
+Also newly added while auditing: `tests/me.validation.test.ts` previously
+had no test at all for a *successful* `PATCH /me` — every existing test
+covered only validation-error paths against a forged, never-persisted
+account id. Added real end-to-end coverage using actual registered
+accounts: a non-sensitive-field update succeeding without a password, an
+email-change attempt correctly rejected without one, one correctly
+rejected with the wrong one (confirming the email is provably unchanged
+afterward), and a correct one succeeding.
+
+Verified: clean build and lint; the full 440-test suite (4 new) passing
+three consecutive runs; `npm audit` clean; `gitleaks` clean; proven to
+actually catch the real bug by temporarily disabling the new
+`currentPassword` check and watching both the missing-password and
+wrong-password tests wrongly succeed with `200` (silently changing the
+email) instead of `400`/`401`, restoring immediately and confirming a
+byte-identical diff against the pre-bug backup; and a live-server run
+against a running compiled server — an email-change attempt with no
+password correctly `400`s, one with the wrong password correctly `401`s
+with the email confirmed unchanged via a follow-up `GET /me`, one with the
+correct password succeeds, and a `displayName`-only change still requires
+no password at all — all live test data deleted afterward. **This
+completes the full OWASP API Security Top 10 audit** (API1 through API10,
+across Steps 55/58/59): one confirmed non-finding each for CORS (API8) and
+five items this step covers, real fixes for SSRF (API7), resource
+consumption (API4), sensitive business flows (API6), unsafe third-party
+consumption (API10), and now broken authentication (API2) — a complete,
+sourced, defensible security posture rather than a partial pass.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

@@ -25,13 +25,41 @@ interface UpdateProfileBody {
   email?: string;
   displayName?: string;
   countryId?: number | null;
+  currentPassword?: string;
 }
 
+// Step 59 (OWASP API2:2023, Broken Authentication): OWASP's own current
+// guidance for this category explicitly names "changing the account
+// owner email address" as a sensitive operation that should require
+// re-authentication, not just a valid session token - a stolen/leaked JWT
+// (XSS, a compromised device, a leaked log line) could otherwise silently
+// redirect an account's email to one the attacker controls, then request
+// a password reset to complete a full takeover, permanently locking out
+// the real owner. This backend already applies exactly that
+// re-authentication requirement to POST /me/password and DELETE /me
+// (both require the current password); email was the one sensitive `/me`
+// field this route left unprotected before this fix. displayName/
+// countryId are not security-sensitive and still need no re-auth.
 async function updateProfile(
   request: FastifyRequest<{ Body: UpdateProfileBody }>,
   reply: FastifyReply,
 ) {
-  const { email, displayName, countryId } = request.body;
+  const { email, displayName, countryId, currentPassword } = request.body;
+
+  if (email !== undefined) {
+    const password = typeof currentPassword === "string" ? currentPassword : "";
+    if (!password) {
+      return badRequest(reply, "currentPassword is required to change your email");
+    }
+    const currentHash = await findPasswordHashById(request.user.sub);
+    if (!currentHash) {
+      return reply.status(404).send({ status: "error", message: "User not found" });
+    }
+    const isCurrentPasswordValid = await verifyPassword(password, currentHash);
+    if (!isCurrentPasswordValid) {
+      return reply.status(401).send({ status: "error", message: "Current password is incorrect" });
+    }
+  }
 
   try {
     const user = await updateUserProfile(request.user.sub, { email, displayName, countryId });
@@ -165,7 +193,9 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
           "Updates the authenticated user's profile. All fields optional; only " +
           "the fields present are changed. Password changes go through " +
           "POST /me/password instead, since that needs current-password " +
-          "confirmation.",
+          "confirmation. Changing email is a sensitive operation too (it's the " +
+          "account's password-reset destination) and requires currentPassword in " +
+          "this same request - displayName/countryId do not.",
         tags: ["users"],
         security: [{ bearerAuth: [] }],
         body: {
@@ -176,6 +206,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
             email: { type: "string", format: "email", maxLength: MAX_EMAIL_LENGTH },
             displayName: { type: "string", minLength: 1, maxLength: MAX_DISPLAY_NAME_LENGTH },
             countryId: idSchema,
+            currentPassword: { type: "string" },
           },
         },
         response: {
