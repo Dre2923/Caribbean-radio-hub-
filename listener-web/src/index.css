@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* docs/BUILD_MANIFEST.md's Front-End Design Direction: "Caribbean color
+   palette: warm sunset tones, ocean blues/teals, vibrant green accents."
+   Every value below was checked against WCAG 2.1 contrast ratios before
+   being picked (see the -600/-700 shades used for actual text/icons on
+   white, vs. the -400/-500 shades reserved for large text, backgrounds,
+   and decorative accents only) - verified with a real contrast-ratio
+   calculation, not eyeballed. */
+@theme {
+  --color-ocean-50: #eefcfb;
+  --color-ocean-100: #d4f5f3;
+  --color-ocean-400: #2aa9bd;
+  --color-ocean-500: #0f8298;
+  /* 6.90:1 on white - passes WCAG AA for normal text */
+  --color-ocean-600: #0a6373;
+  /* 9.31:1 on white - passes WCAG AA for normal text, our primary brand ink */
+  --color-ocean-700: #084e5c;
+  --color-ocean-900: #0a2630;
+
+  --color-sunset-50: #fff4ed;
+  --color-sunset-100: #ffe4d1;
+  /* 3.56:1 on white - large text / icons / decorative only, not body text */
+  --color-sunset-500: #ea580c;
+  /* 5.18:1 on white - passes WCAG AA for normal text */
+  --color-sunset-600: #c2410c;
+
+  --color-success-50: #ecfdf3;
+  /* 3.30:1 on white - large text / badges / icons only, not body text */
+  --color-success-500: #16a34a;
+  /* 5.02:1 on white - passes WCAG AA for normal text */
+  --color-success-700: #15803d;
+}
+
+body {
+  @apply bg-ocean-50 text-ocean-900 antialiased;
+}

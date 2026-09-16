@@ -1,0 +1,47 @@
+name: Listener Web CI
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "listener-web/**"
+      - ".github/workflows/listener-web-ci.yml"
+  pull_request:
+    paths:
+      - "listener-web/**"
+      - ".github/workflows/listener-web-ci.yml"
+
+# Least-privilege default: this workflow only reads the repo and builds a
+# static bundle, it never needs write access to anything - the identical
+# posture as admin-dashboard-ci.yml/backend-ci.yml.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: listener-web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: listener-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (TypeScript + Vite)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Audit dependencies (fail on high/critical)
+        run: npm audit --audit-level=high
