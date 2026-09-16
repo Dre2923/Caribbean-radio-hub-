@@ -7,6 +7,7 @@ import { useNowPlaying } from "../player/useNowPlaying";
 import { StationCard } from "../components/StationCard";
 import { EventCard } from "../components/EventCard";
 import { CacheStatusNote } from "../components/CacheStatusNote";
+import { AdSlot } from "../components/AdSlot";
 import { useQuery } from "@tanstack/react-query";
 import { listCountries } from "../api/lookups";
 import type { LayoutContext } from "../components/Layout";
@@ -72,6 +73,8 @@ export function DiscoverPage() {
           </div>
         )}
       </section>
+
+      <AdSlot countryId={countryId} placementKey="listener_web_discover_banner" />
 
       <section>
         <h2 className="mb-3 text-xl font-bold text-ocean-900">Upcoming events</h2>
