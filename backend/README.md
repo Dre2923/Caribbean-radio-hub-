@@ -2093,6 +2093,142 @@ server's own log output, a redundant repeat `PATCH` correctly producing no
 second notification, and reactivating correctly producing a "back"
 notification — all live test data deleted afterward.
 
+### OWASP API Security Top 10 audit (Step 58 continued)
+
+Following the CI/monitoring work above, this backend was audited against
+the current, authoritative OWASP API Security Top 10 (the 2023 edition —
+confirmed live during this step's research to still be the current
+standard as of 2026, with no newer edition published) — a concrete,
+sourced checklist rather than an open-ended "harden things" pass. Two
+genuine, previously-unaddressed gaps were found and fixed; one suspected
+gap was investigated and found to already be correctly handled, which is
+recorded here as a real, verified outcome rather than a silent non-finding
+(the same "no bug found is still a real result" precedent Step 38's own
+adversarial pass established).
+
+**API7:2023 — Server-Side Request Forgery.** `checkStreamHealth`
+(`src/utils/streamHealthCheck.ts`, Step 19) makes a real outbound request
+to a station's `streamUrl` — admin-supplied at station creation/update and
+re-fetched automatically every few minutes by the background health-check
+worker (Step 20). OWASP's own guidance treats exactly this shape (a
+server-side request to a URL the caller controls) as SSRF risk even for a
+trusted/authenticated role, not only anonymous public input — an admin
+account being phished, a compromised admin credential, or a simple typo
+could otherwise point this backend's own outbound request at an internal
+service or a cloud metadata endpoint (`169.254.169.254`) with no
+protection at all, which is exactly the state this code was in before this
+step.
+
+- **`src/utils/ssrfProtection.ts`** (`assertPublicHostname`) resolves a
+  hostname's real address(es) and rejects any that fall inside a private/
+  reserved network range, using Node's own built-in `net.BlockList` (core
+  since Node 15, confirmed live against nodejs.org's own documentation —
+  well before this project's `>=20` engines requirement) rather than a
+  third-party SSRF-guard package: several exist, but none carry the kind
+  of maturity/adoption signal this build has required before depending on
+  anything else (`nodemailer`, `@prometheus-io/client`) — a zero-dependency
+  built-in is the stronger, more defensible choice. Covers both IPv4
+  (loopback, current-network, link-local/metadata, all three RFC 1918
+  ranges, CGNAT, benchmarking) and IPv6 (loopback, unique-local,
+  link-local) — `BlockList.check()` transparently handles IPv4-mapped IPv6
+  addresses like `::ffff:127.0.0.1` once IPv4 rules are registered, per
+  Node's own documented example, confirmed directly.
+- **Every redirect hop is re-validated, not just the starting host.**
+  `checkStreamHealth` switched from `redirect: "follow"` to a small,
+  bounded (5-hop) manual loop that re-runs the same hostname check before
+  following each `Location` header — closing the specific bypass a single
+  up-front check alone would miss (a `streamUrl` that itself resolves to a
+  public address but redirects to an internal one). Confirmed directly,
+  not assumed from browser-`fetch` behavior, that Node's own `fetch`/undici
+  exposes the real status and `Location` header in `redirect: "manual"`
+  mode (unlike a browser's `fetch`, which returns an opaque, unreadable
+  response for a manual-mode cross-origin redirect — a same-origin-policy
+  protection with no meaning in a server context) — tested against a real
+  local redirecting server before relying on it.
+- **An honest, documented residual limitation, not a false sense of
+  complete safety**: this validates a hostname immediately before use, but
+  the underlying `fetch()` call re-resolves DNS independently when it
+  actually connects. A sophisticated attacker controlling DNS for the
+  target hostname with a near-zero TTL could in principle swap the record
+  between this check and the connection ("DNS rebinding"). Fully closing
+  that requires pinning the validated IP at the socket/dispatcher layer (a
+  custom `undici` `Agent`), which is disproportionate complexity for what
+  remains an admin-authenticated-only input surface (this project's real
+  threat model here), not anonymous public input — a deliberate,
+  documented scope boundary, the same kind already applied to listening
+  history's no-retention-cap decision (Step 52).
+- **Existing Step 19-23 integration tests deliberately point real local
+  test servers at loopback addresses** to exercise real sockets — now
+  correctly refused by the real default. Rather than weaken the guard or
+  thread a bypass parameter through the worker/route call chain, the two
+  affected test files (`tests/healthCheckWorker.test.ts`,
+  `tests/stationHealth.test.ts`) mock `ssrfProtection.ts` at the module
+  level: both files' own job is proving the sweep loop's and the admin
+  route's own behavior (concurrency, error isolation, request/response
+  wiring), which is orthogonal to hostname safety — that real behavior is
+  proven exhaustively, without mocking anything, by
+  `tests/ssrfProtection.test.ts` and `tests/streamHealthCheck.test.ts`'s
+  own dedicated SSRF suite. No production code path is affected either
+  way — the real default is never overridden outside test files.
+
+**API4:2023 — Unrestricted Resource Consumption.** `push_tokens` (Step 53)
+had no cap of any kind on how many distinct tokens one account could
+register — only the API's own global rate limit (100/min) throttled how
+*fast* a compromised or malicious account could grow it, not how *far*.
+Added `MAX_PUSH_TOKENS_PER_USER` (20 — generous relative to how many real
+devices/reinstalls one person realistically has, while still a genuine,
+enforced bound) to `registerPushToken`, using the identical `SELECT ...
+FOR UPDATE`-based concurrency-safe pattern `usersRepository.setUserRole`
+already uses for its own "count this account's rows, then decide"
+invariant (the last-remaining-admin protection) — two concurrent
+registrations can never both read "under the cap" and both proceed past
+it. Re-registering a token the account already owns (the client's own
+periodic refresh) never counts against the cap, only a genuinely
+new-to-this-account token does (brand new, or transferred from a different
+account) — verified directly that a refresh still succeeds exactly at the
+cap, and that un-registering a token frees a real slot for a new one.
+`409` (a state-based conflict, the same status this API already uses for
+"can't demote the last admin") rather than `400`, since the request itself
+is perfectly well-formed.
+
+**API8:2023 — Security Misconfiguration (CORS, investigated).** Checked
+whether the complete absence of any CORS configuration on this API was a
+gap, given the Admin Dashboard (Steps 31-33) is a real browser client on
+what could be a different origin. Found it is not: `admin-dashboard/vite.config.ts`
+already documents a deliberate same-origin reverse-proxy architecture
+(the dashboard's own API calls are proxied to same-origin `/v1/...` in
+both `vite dev` and the documented production reverse-proxy setup)
+specifically so this backend never needs to answer a genuine cross-origin
+browser request at all — the current "no CORS headers set" behavior is
+the correct, secure default for an API with no legitimate cross-origin
+browser caller, not an oversight. Adding an origin-allowlist CORS layer on
+top would have undone a correct, already-documented design decision rather
+than fixed a real gap, so none was added — recorded here as a genuine,
+verified audit outcome, the same "no bug found is still a real result"
+standard already applied elsewhere in this build.
+
+Verified: clean build and lint; the full 390-test suite (19 new, split
+between `tests/ssrfProtection.test.ts`'s direct unit tests,
+`tests/streamHealthCheck.test.ts`'s new SSRF-integration describe block,
+and `tests/pushTokens.test.ts`'s new cap describe block) passing three
+consecutive runs; `npm audit` clean; `gitleaks` clean against the real
+repository; proven to actually catch two real bugs by temporarily (a)
+removing the `169.254.0.0/16` metadata-endpoint subnet rule from
+`ssrfProtection.ts` and watching both the direct unit test and the
+`checkStreamHealth`-level integration test fail with the exact wrong
+(allowed-through) result, and (b) disabling the cap check in
+`registerPushToken` and watching the exact cap test fail with `204`
+instead of `409`, in both cases restoring immediately and confirming a
+byte-identical diff against the pre-bug backup; and a live-server run
+against a running compiled server — a real admin-created station pointed
+at the cloud metadata endpoint and, separately, at a loopback address both
+correctly recorded as unreachable via the manual health-check endpoint
+with the SSRF error message and zero connection latency (proving no
+connection was ever attempted), and a real account registering exactly 20
+push tokens successfully, a 21st correctly rejected with `409`, and a
+re-registration of the very first token still succeeding at the cap — all
+live test data deleted afterward.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

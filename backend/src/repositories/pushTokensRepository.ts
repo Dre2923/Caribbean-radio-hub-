@@ -7,12 +7,22 @@
 // than creating a second row).
 
 import { query } from "../db/pool.js";
+import { withTransaction } from "../db/transaction.js";
 
 export const PUSH_PLATFORMS = ["android", "ios", "windows"] as const;
 export type PushPlatform = (typeof PUSH_PLATFORMS)[number];
 
 export const DEFAULT_PUSH_TOKEN_LIST_LIMIT = 50;
 export const MAX_PUSH_TOKEN_LIST_LIMIT = 100;
+
+// Step 58/OWASP API4 (Unrestricted Resource Consumption): without a cap, a
+// compromised or malicious account could register an unbounded number of
+// distinct device tokens over time (each a real, permanent database row) -
+// there's no other limit anywhere on this table's growth per account.
+// Generous relative to how many real devices/reinstalls one person
+// realistically has (phone, tablet, a reinstall or two) while still being
+// a genuine, enforced bound rather than no bound at all.
+export const MAX_PUSH_TOKENS_PER_USER = 20;
 
 const FOREIGN_KEY_VIOLATION = "23503";
 
@@ -28,6 +38,16 @@ export class PushTokenUserNotFoundError extends Error {
   constructor() {
     super("User not found");
     this.name = "PushTokenUserNotFoundError";
+  }
+}
+
+export class TooManyPushTokensError extends Error {
+  constructor() {
+    super(
+      `Account already has the maximum of ${MAX_PUSH_TOKENS_PER_USER} registered devices - ` +
+        "remove one before adding another",
+    );
+    this.name = "TooManyPushTokensError";
   }
 }
 
@@ -69,16 +89,40 @@ export async function registerPushToken(
   platform: PushPlatform,
 ): Promise<PushToken> {
   try {
-    const result = await query<PushTokenRow>(
-      `INSERT INTO push_tokens (user_id, token, platform)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (token) DO UPDATE
-         SET user_id = EXCLUDED.user_id, platform = EXCLUDED.platform, updated_at = now()
-       RETURNING id, token, platform, created_at, updated_at`,
-      [userId, token, platform],
-    );
-    return toPushToken(result.rows[0]);
+    return await withTransaction(async (client) => {
+      // Locks every row this user currently owns for the rest of this
+      // transaction, so two concurrent registrations can never both read
+      // "under the cap" and both proceed past it - the identical FOR
+      // UPDATE-based serialization usersRepository.setUserRole already
+      // uses for its own "count this account's rows, then decide" check
+      // (the last-remaining-admin protection).
+      const existing = await client.query<{ id: number; token: string }>(
+        "SELECT id, token FROM push_tokens WHERE user_id = $1 FOR UPDATE",
+        [userId],
+      );
+      // Re-registering a token this same account already owns (the
+      // client's own periodic refresh) is never new growth - only a
+      // genuinely new-to-this-account token (brand new, or transferred
+      // from a different account) counts against the cap.
+      const alreadyOwnsThisToken = existing.rows.some((row) => row.token === token);
+      if (!alreadyOwnsThisToken && existing.rows.length >= MAX_PUSH_TOKENS_PER_USER) {
+        throw new TooManyPushTokensError();
+      }
+
+      const result = await client.query<PushTokenRow>(
+        `INSERT INTO push_tokens (user_id, token, platform)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (token) DO UPDATE
+           SET user_id = EXCLUDED.user_id, platform = EXCLUDED.platform, updated_at = now()
+         RETURNING id, token, platform, created_at, updated_at`,
+        [userId, token, platform],
+      );
+      return toPushToken(result.rows[0]);
+    });
   } catch (err) {
+    if (err instanceof TooManyPushTokensError) {
+      throw err;
+    }
     if (hasPgErrorCode(err, FOREIGN_KEY_VIOLATION)) {
       throw new PushTokenUserNotFoundError();
     }

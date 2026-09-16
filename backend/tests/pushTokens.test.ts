@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
+import { MAX_PUSH_TOKENS_PER_USER } from "../src/repositories/pushTokensRepository.js";
 
 afterAll(async () => {
   await pool.end();
@@ -226,6 +227,111 @@ describe("Push tokens", () => {
       headers: { authorization: `Bearer ${tokenA}` },
     });
     expect(listA.json().pushTokens).toHaveLength(1);
+
+    await app.close();
+  });
+});
+
+describe("Push tokens - per-account cap (Step 58, OWASP API4)", () => {
+  it("rejects a genuinely new token once the account is at the cap, with 409", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "cap-limit");
+
+    for (let i = 0; i < MAX_PUSH_TOKENS_PER_USER; i++) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/me/push-tokens",
+        payload: { token: uniqueToken(`cap-limit-${i}`), platform: "android" },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(204);
+    }
+
+    const overCap = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: uniqueToken("cap-limit-over"), platform: "android" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(overCap.statusCode).toBe(409);
+    expect(overCap.json().message).toContain(String(MAX_PUSH_TOKENS_PER_USER));
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/v1/me/push-tokens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.json().pagination.total).toBe(MAX_PUSH_TOKENS_PER_USER);
+
+    await app.close();
+  });
+
+  it("still allows re-registering an already-owned token once at the cap - a refresh is never new growth", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "cap-refresh");
+    const firstToken = uniqueToken("cap-refresh-0");
+
+    for (let i = 0; i < MAX_PUSH_TOKENS_PER_USER; i++) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/me/push-tokens",
+        payload: { token: i === 0 ? firstToken : uniqueToken(`cap-refresh-${i}`), platform: "ios" },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(204);
+    }
+
+    // Re-registering the very first token (already owned) must succeed
+    // even though the account is exactly at the cap.
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: firstToken, platform: "ios" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(refresh.statusCode).toBe(204);
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/v1/me/push-tokens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.json().pagination.total).toBe(MAX_PUSH_TOKENS_PER_USER);
+
+    await app.close();
+  });
+
+  it("frees up a slot after un-registering a token, once at the cap", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "cap-free-slot");
+    const tokens: string[] = [];
+
+    for (let i = 0; i < MAX_PUSH_TOKENS_PER_USER; i++) {
+      const deviceToken = uniqueToken(`cap-free-slot-${i}`);
+      tokens.push(deviceToken);
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/me/push-tokens",
+        payload: { token: deviceToken, platform: "windows" },
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(204);
+    }
+
+    await app.inject({
+      method: "DELETE",
+      url: "/v1/me/push-tokens",
+      payload: { token: tokens[0] },
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    const afterFreeingASlot = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: uniqueToken("cap-free-slot-new"), platform: "windows" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(afterFreeingASlot.statusCode).toBe(204);
 
     await app.close();
   });

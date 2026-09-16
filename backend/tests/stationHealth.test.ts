@@ -1,8 +1,21 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { setUserRole } from "../src/repositories/usersRepository.js";
+
+// Step 58/OWASP API7: see the identical comment in
+// tests/healthCheckWorker.test.ts - checkStreamHealth's real default now
+// refuses a loopback target, exactly what this file's own real local test
+// servers bind to. Mocked at the module level so this file keeps proving
+// what it's actually for (the admin health-check route's own request/
+// response wiring and history-recording), not re-proving the SSRF guard
+// itself, which tests/ssrfProtection.test.ts already covers exhaustively
+// without mocking anything. The real route/worker code never overrides
+// this in production.
+vi.mock("../src/utils/ssrfProtection.js", () => ({
+  assertPublicHostname: vi.fn().mockResolvedValue(undefined),
+}));
 
 afterAll(async () => {
   await pool.end();

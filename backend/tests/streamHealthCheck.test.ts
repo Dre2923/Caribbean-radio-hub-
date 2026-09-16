@@ -21,6 +21,16 @@ function close(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+// Step 58/OWASP API7: checkStreamHealth's real, default hostname
+// validator (ssrfProtection.ts's assertPublicHostname) correctly refuses
+// loopback by default in production - exactly what every test server in
+// this file binds to. Every call below explicitly passes this permissive
+// no-op instead, the same "override the real dependency for a test that
+// needs to reach a local server" pattern already used for FcmPushProvider's
+// injected FetchLike - the real default itself is tested separately, in
+// "checkStreamHealth SSRF protection (Step 58)" below.
+const ALLOW_ALL_HOSTNAMES = async () => undefined;
+
 describe("checkStreamHealth (Step 19)", () => {
   let server: Server | undefined;
 
@@ -47,7 +57,7 @@ describe("checkStreamHealth (Step 19)", () => {
     const url = await listen(server);
 
     const startedAt = Date.now();
-    const result = await checkStreamHealth(url);
+    const result = await checkStreamHealth(url, undefined, ALLOW_ALL_HOSTNAMES);
     const elapsedMs = Date.now() - startedAt;
     keepStreaming = false;
 
@@ -66,7 +76,7 @@ describe("checkStreamHealth (Step 19)", () => {
     });
     const url = await listen(server);
 
-    const result = await checkStreamHealth(url);
+    const result = await checkStreamHealth(url, undefined, ALLOW_ALL_HOSTNAMES);
 
     expect(result.isReachable).toBe(false);
     expect(result.statusCode).toBe(404);
@@ -80,7 +90,7 @@ describe("checkStreamHealth (Step 19)", () => {
     const url = await listen(server);
 
     const startedAt = Date.now();
-    const result = await checkStreamHealth(url, 200);
+    const result = await checkStreamHealth(url, 200, ALLOW_ALL_HOSTNAMES);
     const elapsedMs = Date.now() - startedAt;
 
     expect(result.isReachable).toBe(false);
@@ -93,7 +103,7 @@ describe("checkStreamHealth (Step 19)", () => {
   it("reports a refused connection as unreachable with a real error message", async () => {
     // A port nothing is listening on, on the loopback address - a real
     // connection-refused, not a simulated one.
-    const result = await checkStreamHealth("http://127.0.0.1:1", 1000);
+    const result = await checkStreamHealth("http://127.0.0.1:1", 1000, ALLOW_ALL_HOSTNAMES);
 
     expect(result.isReachable).toBe(false);
     expect(result.statusCode).toBeNull();
@@ -101,10 +111,78 @@ describe("checkStreamHealth (Step 19)", () => {
   });
 
   it("reports a malformed URL as unreachable rather than throwing", async () => {
-    const result = await checkStreamHealth("not-a-url", 1000);
+    const result = await checkStreamHealth("not-a-url", 1000, ALLOW_ALL_HOSTNAMES);
 
     expect(result.isReachable).toBe(false);
     expect(result.statusCode).toBeNull();
     expect(result.error).not.toBeNull();
+  });
+
+  it("follows a real redirect to another allowed host and reports the final response", async () => {
+    let target: Server | undefined;
+    try {
+      target = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "audio/mpeg" });
+        res.end();
+      });
+      const targetUrl = await listen(target);
+
+      server = createServer((_req, res) => {
+        res.writeHead(302, { Location: targetUrl });
+        res.end();
+      });
+      const redirectingUrl = await listen(server);
+
+      const result = await checkStreamHealth(redirectingUrl, undefined, ALLOW_ALL_HOSTNAMES);
+
+      expect(result.isReachable).toBe(true);
+      expect(result.statusCode).toBe(200);
+    } finally {
+      if (target) await close(target);
+    }
+  });
+});
+
+describe("checkStreamHealth SSRF protection (Step 58, OWASP API7)", () => {
+  it("refuses a loopback stream URL by default - not given the benefit of the doubt", async () => {
+    // No permissive validator passed here - this is the real, default
+    // behavior every production call site actually gets.
+    const result = await checkStreamHealth("http://127.0.0.1:1/stream", 1000);
+
+    expect(result.isReachable).toBe(false);
+    expect(result.statusCode).toBeNull();
+    expect(result.error).toMatch(/private\/reserved network address/);
+  });
+
+  it("refuses a literal cloud-metadata-endpoint address (169.254.169.254) by default", async () => {
+    const result = await checkStreamHealth("http://169.254.169.254/latest/meta-data/", 1000);
+
+    expect(result.isReachable).toBe(false);
+    expect(result.error).toMatch(/private\/reserved network address/);
+  });
+
+  it("refuses a redirect to a blocked address, even from an allowed starting host", async () => {
+    let server: Server | undefined;
+    try {
+      server = createServer((_req, res) => {
+        res.writeHead(302, { Location: "http://169.254.169.254/latest/meta-data/" });
+        res.end();
+      });
+      const url = await listen(server);
+
+      // The starting host (127.0.0.1) is explicitly allowed here so this
+      // test isolates the redirect-hop check specifically, not the
+      // starting-host check already covered above.
+      const result = await checkStreamHealth(url, 1000, async (hostname) => {
+        if (hostname === "169.254.169.254") {
+          throw new Error("Refusing to connect - resolves to a private/reserved network address");
+        }
+      });
+
+      expect(result.isReachable).toBe(false);
+      expect(result.error).toMatch(/private\/reserved network address/);
+    } finally {
+      if (server) await close(server);
+    }
   });
 });

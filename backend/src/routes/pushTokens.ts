@@ -4,8 +4,10 @@ import {
   removePushToken,
   listPushTokens,
   PushTokenUserNotFoundError,
+  TooManyPushTokensError,
   DEFAULT_PUSH_TOKEN_LIST_LIMIT,
   MAX_PUSH_TOKEN_LIST_LIMIT,
+  MAX_PUSH_TOKENS_PER_USER,
   type PushPlatform,
 } from "../repositories/pushTokensRepository.js";
 import { errorResponseSchema } from "../schemas/common.js";
@@ -40,7 +42,9 @@ export async function pushTokensRoutes(app: FastifyInstance): Promise<void> {
           "Idempotent by design: registering a token that's already known overwrites its " +
           "owner and platform and refreshes updated_at, rather than erroring - this is how a " +
           "client reports its own periodic FCM token refresh, or a different account now " +
-          "signed in on the same device.",
+          `signed in on the same device. Capped at ${MAX_PUSH_TOKENS_PER_USER} registered ` +
+          "devices per account (409 once reached) - re-registering an already-owned token " +
+          "never counts against this cap.",
         tags: ["push-tokens"],
         security: [{ bearerAuth: [] }],
         body: createPushTokenBodySchema,
@@ -49,6 +53,7 @@ export async function pushTokensRoutes(app: FastifyInstance): Promise<void> {
           400: errorResponseSchema,
           401: errorResponseSchema,
           404: errorResponseSchema,
+          409: errorResponseSchema,
         },
       },
     },
@@ -58,6 +63,9 @@ export async function pushTokensRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         if (err instanceof PushTokenUserNotFoundError) {
           return reply.status(404).send({ status: "error", message: "User not found" });
+        }
+        if (err instanceof TooManyPushTokensError) {
+          return reply.status(409).send({ status: "error", message: err.message });
         }
         throw err;
       }

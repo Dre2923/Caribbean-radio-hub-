@@ -1,11 +1,29 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { setUserRole } from "../src/repositories/usersRepository.js";
 import { listActiveStationsForHealthCheck } from "../src/repositories/stationsRepository.js";
 import { listHealthChecks } from "../src/repositories/stationHealthRepository.js";
 import { sweepStations } from "../src/stationHealth/healthCheckWorker.js";
+
+// Step 58/OWASP API7: checkStreamHealth's real default now refuses to
+// connect to a loopback/private-network target (ssrfProtection.ts) -
+// exactly what every test server in this file binds to, being real local
+// HTTP servers rather than mocks (this file's own top-of-suite reasoning).
+// Mocked here at the module level rather than by threading a test-only
+// parameter through sweepStations/the worker - this file's job is
+// proving the sweep loop's own behavior (concurrency, overlap-guarding,
+// error isolation across a target list), which is orthogonal to whether
+// a given target's hostname is publicly routable; that real check is
+// proven separately and exhaustively in tests/ssrfProtection.test.ts and
+// tests/streamHealthCheck.test.ts's own dedicated SSRF suite, neither of
+// which mocks anything. No production code path is affected either way -
+// sweepStations/checkStreamHealth's own real default is never overridden
+// outside this test file.
+vi.mock("../src/utils/ssrfProtection.js", () => ({
+  assertPublicHostname: vi.fn().mockResolvedValue(undefined),
+}));
 
 afterAll(async () => {
   await pool.end();
