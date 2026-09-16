@@ -67,6 +67,91 @@ export interface RankedStation {
   reliability: StationReliability;
 }
 
+// Mirrors backend/src/schemas/common.ts's userSchema exactly.
+export interface User {
+  id: number;
+  email: string;
+  displayName: string;
+  countryId: number | null;
+  createdAt: string;
+  role: "user" | "admin";
+  roleChangedAt: string | null;
+  roleChangedByUserId: number | null;
+}
+
+// Mirrors backend/src/schemas/userFeatures.ts's favorite*Schema/
+// listeningHistoryEntrySchema/notificationPreferencesSchema exactly.
+export interface FavoriteStation {
+  station: Station;
+  favoritedAt: string;
+}
+
+export interface FavoriteEvent {
+  event: Event;
+  favoritedAt: string;
+}
+
+export interface ListeningHistoryEntry {
+  id: number;
+  station: Station | null;
+  listenedAt: string;
+}
+
+export interface NotificationPreferences {
+  favoriteStationAvailabilityChanges: boolean;
+  weeklyEventsDigest: boolean;
+}
+
+// Mirrors backend/src/schemas/voice.ts's voiceCommandResponseSchema
+// exactly - exactly one of station/rankedStations/candidates/events is
+// ever non-null, determined by `intent`.
+export type VoiceIntent =
+  | "play_station"
+  | "play_ranked"
+  | "playback_control"
+  | "search_events"
+  | "help"
+  | "ambiguous"
+  | "not_found"
+  | "unrecognized";
+
+export type PlaybackAction = "pause" | "resume" | "stop" | "next" | "previous";
+
+export interface VoiceHelpTopic {
+  category: string;
+  examples: string[];
+}
+
+export interface VoiceCommandResult {
+  intent: VoiceIntent;
+  station: Station | null;
+  rankedStations: Station[] | null;
+  candidates: Station[] | null;
+  events: Event[] | null;
+  countryId: number | null;
+  genreId: number | null;
+  categoryId: number | null;
+  dateRangeStart: string | null;
+  dateRangeEnd: string | null;
+  action: PlaybackAction | null;
+  helpTopics: VoiceHelpTopic[] | null;
+  message: string | null;
+}
+
+// Mirrors backend/src/schemas/ads.ts's adPlacementSchema fields this
+// client actually needs to render a placeholder slot and record events.
+export type AdFormat = "banner" | "interstitial" | "native";
+
+export interface AdPlacement {
+  id: number;
+  placementKey: string;
+  countryId: number | null;
+  adFormat: AdFormat;
+  androidAdUnitId: string | null;
+  iosAdUnitId: string | null;
+  isActive: boolean;
+}
+
 export type EventStatus = "pending" | "approved" | "rejected";
 
 export interface EventCategory {

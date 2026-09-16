@@ -4,6 +4,8 @@ import { useCachedQuery } from "../hooks/useCachedQuery";
 import { MediaAvatar } from "../components/MediaAvatar";
 import { CacheStatusNote } from "../components/CacheStatusNote";
 import { ApiError } from "../api/client";
+import { FavoriteButton } from "../components/FavoriteButton";
+import { useFavoriteEvents } from "../hooks/useFavorites";
 
 function formatEventDateRange(startsAt: string, endsAt: string | null): string {
   const start = new Date(startsAt).toLocaleString(undefined, {
@@ -26,6 +28,7 @@ function formatEventDateRange(startsAt: string, endsAt: string | null): string {
 export function EventDetailPage() {
   const { id } = useParams<{ id: string }>();
   const eventId = Number(id);
+  const { enabled: favoritesEnabled, favoritedIds, toggle } = useFavoriteEvents();
 
   const { data, cacheState, cachedAt } = useCachedQuery(["event", eventId], async () => {
     try {
@@ -56,7 +59,16 @@ export function EventDetailPage() {
       <CacheStatusNote cacheState={cacheState} cachedAt={cachedAt} />
       <MediaAvatar src={event.imageUrl} label={event.title} className="h-48 w-full rounded-xl text-4xl" />
       <div>
-        <h1 className="text-2xl font-bold text-ocean-900">{event.title}</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-ocean-900">{event.title}</h1>
+          {favoritesEnabled && (
+            <FavoriteButton
+              isFavorited={favoritedIds.has(event.id)}
+              onToggle={() => toggle(event.id)}
+              label={event.title}
+            />
+          )}
+        </div>
         <p className="mt-1 text-ocean-700">{formatEventDateRange(event.startsAt, event.endsAt)}</p>
         <div className="mt-2 flex flex-wrap gap-1">
           {event.categories.map((category) => (

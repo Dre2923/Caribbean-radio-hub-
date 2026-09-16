@@ -38,3 +38,27 @@ export function listEvents(params: ListEventsParams): Promise<ListEventsResponse
 export function getEvent(id: number): Promise<{ event: Event }> {
   return apiFetch(`/v1/events/${id}`);
 }
+
+export interface SubmitEventInput {
+  countryId: number;
+  title: string;
+  description?: string;
+  venue?: string;
+  venueAddress?: string;
+  latitude?: number;
+  longitude?: number;
+  startsAt: string;
+  endsAt?: string;
+  imageUrl?: string;
+  ticketUrl?: string;
+  categoryIds?: number[];
+}
+
+// POST /v1/events requires only authentication (not admin) - any signed-in
+// user can submit an event, which starts in the moderation queue
+// (status: "pending") until an admin approves it. See
+// backend/src/routes/events.ts's own createEventHandler comment.
+export async function submitEvent(input: SubmitEventInput): Promise<Event> {
+  const { event } = await apiFetch<{ event: Event }>("/v1/events", { method: "POST", body: input });
+  return event;
+}

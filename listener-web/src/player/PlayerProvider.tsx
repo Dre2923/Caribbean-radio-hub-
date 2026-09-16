@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RankedStation, Station } from "../api/types";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
 import { PlayerContext, type PlayerSource, type PlayerState, type PlayerContextValue } from "./playerContext";
+import { useAuth } from "../auth/useAuth";
+import { recordListen } from "../api/listeningHistory";
 
 // Implements docs/FLUTTER_CLIENT_SPEC.md Section 8.3's fallback-chain
 // requirement client-side, exactly as that section specifies: this is a
@@ -40,6 +42,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [state, setState] = useState<PlayerState>({ source: null, status: "idle", message: null });
   const isOnline = useOnlineStatus();
+  const { status: authStatus } = useAuth();
+  // Tracks which station id this tab has already reported to
+  // POST /v1/me/listening-history for the current play action, so a
+  // buffering stall's own resume (a second real "playing" event for the
+  // same station) doesn't write a duplicate history entry. Reset to null
+  // on every fresh Play action (see resolvePlayback's mode "fresh").
+  const recordedListenForRef = useRef<number | null>(null);
 
   function clearStallTimer() {
     if (stallTimerRef.current !== null) {
@@ -53,6 +62,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // (mode "advance").
   function resolvePlayback(source: PlayerSource, mode: "fresh" | "advance") {
     let target = source;
+
+    if (mode === "fresh") {
+      recordedListenForRef.current = null;
+    }
 
     if (mode === "advance") {
       clearStallTimer();
@@ -108,7 +121,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     const onPlaying = () => {
       clearStallTimer();
-      setState((prev) => ({ ...prev, status: "playing", message: null }));
+      setState((prev) => {
+        const station = currentStationOf(prev.source);
+        // Client-reported (the backend holds no server-side "now playing"
+        // state - backend/src/routes/listeningHistory.ts's own comment).
+        // Fire-and-forget: a failed history write must never affect real
+        // playback. Only recorded for a signed-in user, and once per
+        // distinct station per fresh play action (see the ref's comment).
+        if (station && authStatus === "signed-in" && recordedListenForRef.current !== station.id) {
+          recordedListenForRef.current = station.id;
+          void recordListen(station.id).catch(() => {});
+        }
+        return { ...prev, status: "playing", message: null };
+      });
     };
     const onError = () => {
       setState((prev) => {

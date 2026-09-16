@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import { App } from "./App";
 import { PlayerProvider } from "./player/PlayerProvider";
+import { AuthProvider } from "./auth/AuthProvider";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,11 +27,13 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <PlayerProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </PlayerProvider>
+      <AuthProvider>
+        <PlayerProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </PlayerProvider>
+      </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

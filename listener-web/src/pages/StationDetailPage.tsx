@@ -5,6 +5,8 @@ import { useNowPlaying } from "../player/useNowPlaying";
 import { MediaAvatar } from "../components/MediaAvatar";
 import { CacheStatusNote } from "../components/CacheStatusNote";
 import { ApiError } from "../api/client";
+import { FavoriteButton } from "../components/FavoriteButton";
+import { useFavoriteStations } from "../hooks/useFavorites";
 
 // docs/FLUTTER_CLIENT_SPEC.md Section 6.2: a 404 (unknown or
 // curated-off - identical response either way, Step 17's own design)
@@ -14,6 +16,7 @@ export function StationDetailPage() {
   const { id } = useParams<{ id: string }>();
   const stationId = Number(id);
   const { playSingle } = useNowPlaying();
+  const { enabled: favoritesEnabled, favoritedIds, toggle } = useFavoriteStations();
 
   const { data, cacheState, cachedAt } = useCachedQuery(["station", stationId], async () => {
     try {
@@ -44,7 +47,16 @@ export function StationDetailPage() {
       <div className="flex items-start gap-4">
         <MediaAvatar src={station.logoUrl} label={station.name} className="h-24 w-24 shrink-0 rounded-xl text-3xl" />
         <div>
-          <h1 className="text-2xl font-bold text-ocean-900">{station.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-ocean-900">{station.name}</h1>
+            {favoritesEnabled && (
+              <FavoriteButton
+                isFavorited={favoritedIds.has(station.id)}
+                onToggle={() => toggle(station.id)}
+                label={station.name}
+              />
+            )}
+          </div>
           <div className="mt-1 flex flex-wrap gap-1">
             {[...station.genres, ...station.languages].map((tag) => (
               <span

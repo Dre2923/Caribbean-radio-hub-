@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
 import type { Event } from "../api/types";
 import { MediaAvatar } from "./MediaAvatar";
+import { FavoriteButton } from "./FavoriteButton";
+import { useFavoriteEvents } from "../hooks/useFavorites";
 
 function formatEventDate(isoTimestamp: string): string {
   return new Date(isoTimestamp).toLocaleString(undefined, {
@@ -13,10 +15,12 @@ function formatEventDate(isoTimestamp: string): string {
 }
 
 export function EventCard({ event }: { event: Event }) {
+  const { enabled, favoritedIds, toggle } = useFavoriteEvents();
+
   return (
     <Link
       to={`/events/${event.id}`}
-      className="flex gap-4 rounded-xl border border-ocean-100 bg-white p-4 shadow-sm transition hover:border-ocean-400 hover:shadow-md"
+      className="flex items-start gap-4 rounded-xl border border-ocean-100 bg-white p-4 shadow-sm transition hover:border-ocean-400 hover:shadow-md"
     >
       <MediaAvatar src={event.imageUrl} label={event.title} className="h-16 w-16 shrink-0 rounded-lg text-lg" />
       <div className="min-w-0 flex-1">
@@ -37,6 +41,13 @@ export function EventCard({ event }: { event: Event }) {
           ))}
         </div>
       </div>
+      {enabled && (
+        <FavoriteButton
+          isFavorited={favoritedIds.has(event.id)}
+          onToggle={() => toggle(event.id)}
+          label={event.title}
+        />
+      )}
     </Link>
   );
 }

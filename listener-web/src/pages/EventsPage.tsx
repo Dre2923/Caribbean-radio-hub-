@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listEvents } from "../api/events";
 import { listEventCategories } from "../api/lookups";
@@ -78,7 +78,15 @@ export function EventsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-ocean-900">Events</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-ocean-900">Events</h1>
+        <Link
+          to="/events/new"
+          className="rounded-full bg-ocean-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-ocean-600"
+        >
+          Submit an event
+        </Link>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <input
