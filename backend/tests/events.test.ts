@@ -1651,3 +1651,38 @@ describe("POST /v1/events rate limiting (Step 58, OWASP API6)", () => {
     await app.close();
   });
 });
+
+// Step 55 (User Features bucket closing pass): see stations.test.ts's own
+// identical describe block for the full finding - every id-shaped integer
+// field across this API, this file's :id/countryId/categoryId included,
+// enforced only `minimum: 1` with no upper bound, so an out-of-int4-range
+// value reached Postgres and raised a raw, unhandled 500 instead of a
+// clean 400. Fixed with the shared, bounded `idSchema`.
+describe("Integer id upper bound (Step 55)", () => {
+  it("rejects an out-of-int4-range :id path param with 400, not a raw database error", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/events/99999999999999999999",
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an out-of-int4-range countryId/categoryId querystring filter with 400", async () => {
+    const app = buildApp();
+    const byCountry = await app.inject({
+      method: "GET",
+      url: "/v1/events?countryId=99999999999999999999",
+    });
+    expect(byCountry.statusCode).toBe(400);
+
+    const byCategory = await app.inject({
+      method: "GET",
+      url: "/v1/events?categoryId=99999999999999999999",
+    });
+    expect(byCategory.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

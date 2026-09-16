@@ -1,7 +1,7 @@
 // Radio Master Catalog (Step 12+) schema fragments, kept in their own
 // module rather than schemas/common.ts as the catalog domain grows.
 
-import { genreSchema, languageSchema } from "./common.js";
+import { genreSchema, idSchema, languageSchema } from "./common.js";
 
 export const MAX_STATION_NAME_LENGTH = 200; // matches radio_stations.name's column width
 export const MAX_URL_LENGTH = 2048; // a practical, generous bound - not any spec's hard limit
@@ -15,7 +15,7 @@ const MAX_TAG_IDS = 50;
 
 const TAG_ID_LIST_SCHEMA = {
   type: "array",
-  items: { type: "integer", minimum: 1 },
+  items: idSchema,
   maxItems: MAX_TAG_IDS,
 } as const;
 
@@ -81,7 +81,7 @@ export const createStationBodySchema = {
   additionalProperties: false,
   required: ["countryId", "name", "streamUrl"],
   properties: {
-    countryId: { type: "integer", minimum: 1 },
+    countryId: idSchema,
     name: { type: "string", minLength: 1, maxLength: MAX_STATION_NAME_LENGTH },
     streamUrl: HTTPS_URL_SCHEMA,
     websiteUrl: HTTPS_URL_SCHEMA,
@@ -97,7 +97,7 @@ export const updateStationBodySchema = {
   additionalProperties: false,
   minProperties: 1,
   properties: {
-    countryId: { type: "integer", minimum: 1 },
+    countryId: idSchema,
     name: { type: "string", minLength: 1, maxLength: MAX_STATION_NAME_LENGTH },
     streamUrl: HTTPS_URL_SCHEMA,
     websiteUrl: HTTPS_URL_SCHEMA,

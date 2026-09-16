@@ -14,7 +14,7 @@ import {
   InvalidLanguageError,
 } from "../repositories/stationsRepository.js";
 import { notifyFavoriteStationAvailabilityChange } from "../notifications/favoriteStationAvailabilityNotifier.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import {
   createStationBodySchema,
   stationSchema,
@@ -274,9 +274,9 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
           type: "object",
           additionalProperties: false,
           properties: {
-            countryId: { type: "integer", minimum: 1 },
-            genreId: { type: "integer", minimum: 1 },
-            languageId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
+            genreId: idSchema,
+            languageId: idSchema,
             q: { type: "string", minLength: 1, maxLength: MAX_STATION_SEARCH_LENGTH },
             limit: {
               type: "integer",
@@ -331,9 +331,9 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
           type: "object",
           additionalProperties: false,
           properties: {
-            countryId: { type: "integer", minimum: 1 },
-            genreId: { type: "integer", minimum: 1 },
-            languageId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
+            genreId: idSchema,
+            languageId: idSchema,
             q: { type: "string", minLength: 1, maxLength: MAX_STATION_SEARCH_LENGTH },
             isActive: { type: "boolean" },
             limit: {
@@ -380,7 +380,7 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           200: {
@@ -455,7 +455,7 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         body: updateStationBodySchema,
         response: {
@@ -489,7 +489,7 @@ export async function stationsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           204: { type: "null", description: "Station deleted." },

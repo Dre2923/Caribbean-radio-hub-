@@ -3,6 +3,36 @@
 // the "shape of a user" or "shape of an error" is defined once, not
 // re-typed slightly differently in every route file.
 
+// Step 55/User Features bucket closing adversarial pass: every id-shaped
+// integer field across this API (a station/event/country/genre/language/
+// category id, in a path param, body field, querystring filter, or id-list
+// array) is ultimately compared against a Postgres `integer` (int4) column
+// - `serial` primary keys and their foreign-key references are int4 by
+// default, confirmed directly against every `CREATE TABLE` in this
+// project's own migrations. int4's documented range
+// (postgresql.org/docs/current/datatype-numeric.html) is exactly
+// -2147483648 to 2147483647. Before this fix, every one of those fields
+// only enforced `minimum: 1` with no upper bound, so a client-supplied id
+// like 99999999999999999999 passed AJV's own `type: "integer"` check (very
+// large whole numbers are still integers in IEEE-754 double precision, the
+// same representation JavaScript's `Number` type uses) and reached the
+// repository layer, where Postgres itself rejected it with a raw
+// "value ... out of range for type integer" error - an unhandled 500, not
+// the clean 400 a malformed id should produce. Reproduced live against a
+// running compiled server before writing this fix, not assumed.
+export const POSTGRES_INTEGER_MAX = 2147483647;
+
+// The one shared schema every id-shaped integer field in this API should
+// use instead of a bespoke, unbounded `{ type: "integer", minimum: 1 }` -
+// defined once here so every call site gets the upper bound for free and a
+// future id field can't reintroduce the same gap by copying an old,
+// unbounded inline schema instead of this one.
+export const idSchema = {
+  type: "integer",
+  minimum: 1,
+  maximum: POSTGRES_INTEGER_MAX,
+} as const;
+
 export const errorResponseSchema = {
   type: "object",
   properties: {

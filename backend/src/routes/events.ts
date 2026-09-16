@@ -15,7 +15,7 @@ import {
   type EventStatus,
 } from "../repositories/eventsRepository.js";
 import { getUserRole } from "../repositories/usersRepository.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import {
   createEventBodySchema,
   eventSchema,
@@ -417,8 +417,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           type: "object",
           additionalProperties: false,
           properties: {
-            countryId: { type: "integer", minimum: 1 },
-            categoryId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
+            categoryId: idSchema,
             q: { type: "string", minLength: 1, maxLength: MAX_EVENT_SEARCH_LENGTH },
             startsAfter: { type: "string", format: "date-time" },
             startsBefore: { type: "string", format: "date-time" },
@@ -483,8 +483,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           type: "object",
           additionalProperties: false,
           properties: {
-            countryId: { type: "integer", minimum: 1 },
-            categoryId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
+            categoryId: idSchema,
             q: { type: "string", minLength: 1, maxLength: MAX_EVENT_SEARCH_LENGTH },
             startsAfter: { type: "string", format: "date-time" },
             startsBefore: { type: "string", format: "date-time" },
@@ -537,7 +537,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           200: {
@@ -631,7 +631,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         body: updateEventBodySchema,
         response: {
@@ -666,7 +666,7 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           204: { type: "null", description: "Event deleted." },

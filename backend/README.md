@@ -2093,6 +2093,111 @@ server's own log output, a redundant repeat `PATCH` correctly producing no
 second notification, and reactivating correctly producing a "back"
 notification — all live test data deleted afterward.
 
+### User Features bucket closing adversarial pass (Step 55)
+
+The fifth and final step of the User Features bucket (Steps 51-54), the
+same "the closing step reviews and hardens everything the bucket built"
+shape as Steps 18/23/30/38's own bucket closers — a systematic adversarial
+sweep across favorites, listening history, push tokens, and notification
+preferences, plus (since the sweep isn't scoped to a single route file) a
+codebase-wide fix the sweep surfaced.
+
+**Real finding: every id-shaped integer field in this entire API had no
+upper bound.** Every route accepting a station/event/country/genre/
+language/category id — as a path param, a body field, a querystring
+filter, or an array-of-ids item — validated only `{ type: "integer",
+minimum: 1 }`, with nothing stopping an absurdly large value. A value like
+`99999999999999999999` still passes AJV's own `type: "integer"` check
+(very large whole numbers remain integers in the IEEE-754 double precision
+both AJV's type coercion and JavaScript's own `Number` use), so it reached
+the repository layer and hit Postgres's `integer` (int4) column type
+directly — every `serial` primary key and its foreign-key references in
+this project's own migrations are int4 by default, confirmed directly
+against every `CREATE TABLE`, whose documented range
+(postgresql.org/docs/current/datatype-numeric.html) is exactly
+-2147483648 to 2147483647. The result was a raw, unhandled `"value ...
+out of range for type integer"` database error surfacing as a `500`, not
+the clean `400` a malformed id should produce — reproduced live against a
+running compiled server (`PUT /v1/me/favorites/stations/
+99999999999999999999`) before writing the fix, not assumed. Fixed with one
+shared, bounded schema, `idSchema` (`schemas/common.ts`,
+`{ type: "integer", minimum: 1, maximum: 2147483647 }`), replacing the
+bespoke unbounded inline schema at all 35 call sites across `routes/
+favorites.ts`, `listeningHistory.ts`, `me.ts`, `stations.ts`, `users.ts`,
+`stationHealth.ts`, `stationRanking.ts`, `events.ts`, and `schemas/
+stations.ts`/`events.ts` — one definition now protects every id field in
+this API, and a future id field reuses it instead of risking the same gap
+by copying an old inline schema. Regression-proofed by temporarily
+removing the `maximum` bound and watching the exact new tests fail with
+`500` instead of `400` before restoring it and confirming a byte-identical
+diff against the pre-bug backup.
+
+**A hypothesis investigated and correctly reversed, not shipped —
+recorded here as real due diligence, not hidden.** While probing this same
+class of gap, `PATCH /v1/me/notification-preferences` with a body of only
+`{ role: "admin" }` (no recognized field at all) was found to return `200`
+with the preference silently unchanged, rather than the `400` a request
+with zero valid fields should get from its own `minProperties: 1`
+constraint. Root cause: Fastify's ajv compiler defaults to
+`removeAdditional: true` (`@fastify/ajv-compiler`'s own
+`default-ajv-options.js`, confirmed directly against the installed
+package), and per ajv's own documented semantics that makes an explicit
+`additionalProperties: false` silently delete an unrecognized field and
+let validation pass, rather than fail it — `minProperties` is evaluated
+against the field count *before* that removal happens. The obvious-looking
+fix, disabling `removeAdditional` globally in `app.ts`'s Fastify
+constructor, was implemented, built, and run against the full suite before
+being reverted: it broke three pre-existing, deliberately-written tests —
+`tests/adminRole.test.ts`'s "strips a client-supplied role field on
+registration - role can never be self-assigned", and two equivalent tests
+in `stations.test.ts`/`events.test.ts` — that already rely on this exact
+silent-strip behavior as this codebase's own established mass-assignment
+defense: a forbidden field (`role`, event `status`) is dropped and the
+rest of the request proceeds normally, rather than failing the whole
+request outright. Changing the global default would have reversed a
+correct, previously-verified security decision to "fix" what turned out
+not to be a bug. `tests/notificationPreferences.test.ts`'s own adversarial
+test was rewritten to confirm the real, correct behavior instead — this
+endpoint already benefits from the same protection, previously unverified
+for this specific route, and is not a gap.
+
+Also added, mirroring Step 38's own "prove the whole bucket's surface
+survives adversarial input" shape: malformed/negative/non-integer/
+SQL-injection-shaped path params across favorites (with the underlying
+`users` table's presence confirmed unchanged before and after, not merely
+trusted); a push-token length boundary test (exactly `MAX_PUSH_TOKEN_LENGTH`
+accepted, one character over rejected); a SQL-injection-shaped push-token
+value proven to round-trip as inert stored data with the `push_tokens`
+table itself still present and queryable afterward, not merely assumed
+inert from parameterization alone. A full end-to-end review of
+`favorites.ts`/`listeningHistory.ts`/`pushTokens.ts`/
+`notificationPreferences.ts`/`favoriteStationAvailabilityNotifier.ts` for
+field-name drift or an inconsistent null-contract across the four steps
+that built them — the same review Step 38 did for `commandResolver.ts` —
+found none: camelCase field names, ownership scoping via `request.user.sub`,
+and idempotency semantics are all consistent across every route in the
+bucket.
+
+Verified: clean build and lint; the full 405-test suite (14 new, split
+across `tests/favorites.test.ts`, `tests/stations.test.ts`,
+`tests/events.test.ts`, `tests/adminUsers.test.ts`,
+`tests/listeningHistory.test.ts`, `tests/pushTokens.test.ts`, and
+`tests/notificationPreferences.test.ts`) passing three consecutive runs;
+`npm audit` clean; `gitleaks` clean against the real repository; and a
+live-server run against a running compiled server confirming an
+out-of-range id correctly `400`s (path param, body field, and querystring
+filter, across favorites/stations/events) instead of the pre-fix `500`,
+and confirming the reversed hypothesis's correct final behavior — a
+role-only `PATCH /v1/me/notification-preferences` still returns `200`
+unchanged, and a `role: "admin"` on registration is still silently
+stripped rather than rejected or honored — all live test data deleted
+afterward. **This closes the User Features bucket (Steps 51-55)**: a
+complete, backend-verified favorites/listening-history/push-notifications/
+preferences feature set with a real, defensible v1 hardening pass behind
+it, a genuine cross-cutting bug found and fixed along the way, and one
+plausible-looking fix correctly investigated and rejected rather than
+shipped on assumption.
+
 ### OWASP API Security Top 10 audit (Step 58 continued)
 
 Following the CI/monitoring work above, this backend was audited against

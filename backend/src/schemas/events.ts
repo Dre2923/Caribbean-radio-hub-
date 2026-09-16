@@ -1,7 +1,7 @@
 // Events Database (Step 24+) schema fragments, kept in their own module
 // the same way schemas/stations.ts separated out from schemas/common.ts.
 
-import { eventCategorySchema } from "./common.js";
+import { eventCategorySchema, idSchema } from "./common.js";
 
 export const MAX_EVENT_TITLE_LENGTH = 200; // matches events.title's column width
 export const MAX_EVENT_VENUE_LENGTH = 300; // matches events.venue's column width
@@ -27,7 +27,7 @@ const HTTPS_URL_SCHEMA = {
 
 const CATEGORY_ID_LIST_SCHEMA = {
   type: "array",
-  items: { type: "integer", minimum: 1 },
+  items: idSchema,
   maxItems: MAX_CATEGORY_IDS,
 } as const;
 
@@ -112,7 +112,7 @@ export const createEventBodySchema = {
   additionalProperties: false,
   required: ["countryId", "title", "startsAt"],
   properties: {
-    countryId: { type: "integer", minimum: 1 },
+    countryId: idSchema,
     title: { type: "string", minLength: 1, maxLength: MAX_EVENT_TITLE_LENGTH },
     description: { type: "string", maxLength: MAX_EVENT_DESCRIPTION_LENGTH },
     venue: { type: "string", minLength: 1, maxLength: MAX_EVENT_VENUE_LENGTH },
@@ -132,7 +132,7 @@ export const updateEventBodySchema = {
   additionalProperties: false,
   minProperties: 1,
   properties: {
-    countryId: { type: "integer", minimum: 1 },
+    countryId: idSchema,
     title: { type: "string", minLength: 1, maxLength: MAX_EVENT_TITLE_LENGTH },
     description: { type: "string", maxLength: MAX_EVENT_DESCRIPTION_LENGTH },
     venue: { type: "string", minLength: 1, maxLength: MAX_EVENT_VENUE_LENGTH },

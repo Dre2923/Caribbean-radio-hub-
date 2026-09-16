@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getRankedStationsForCountry } from "../repositories/stationRankingRepository.js";
 import { DEFAULT_RELIABILITY_WINDOW_HOURS } from "../repositories/stationHealthRepository.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import { rankedStationSchema } from "../schemas/stationHealth.js";
 
 const DEFAULT_RANKED_LIMIT = 20;
@@ -46,7 +46,7 @@ export async function stationRankingRoutes(app: FastifyInstance): Promise<void> 
           additionalProperties: false,
           required: ["countryId"],
           properties: {
-            countryId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
             windowHours: {
               type: "integer",
               minimum: 1,

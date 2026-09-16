@@ -332,3 +332,31 @@ describe("Listening history", () => {
     await app.close();
   });
 });
+
+// Step 55 (User Features bucket closing pass): see tests/stations.test.ts's
+// own identical describe block for the full finding - every id-shaped
+// integer field across this API, this route's body-supplied stationId
+// included, enforced only `minimum: 1` with no upper bound, so an
+// out-of-int4-range value reached Postgres and raised a raw, unhandled 500
+// instead of a clean 400. Fixed with the shared, bounded `idSchema`.
+describe("Integer id upper bound (Step 55)", () => {
+  it("rejects an out-of-int4-range body stationId with 400, not a raw database error", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "id-bound");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/me/listening-history",
+      // A JSON body field is a real numeric literal, not a path-param
+      // string - 9999999999 (10 billion) is already well beyond int4's
+      // ~2.1 billion max while staying safely inside JS's exact-integer
+      // range, avoiding the precision loss a literal as large as the
+      // path-param tests use would incur here.
+      payload: { stationId: 9999999999 },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

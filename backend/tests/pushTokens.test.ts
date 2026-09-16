@@ -336,3 +336,81 @@ describe("Push tokens - per-account cap (Step 58, OWASP API4)", () => {
     await app.close();
   });
 });
+
+// Step 55: the User Features bucket's (51-54) closing adversarial
+// hardening pass, the same "the closing step reviews and hardens
+// everything the bucket built" shape as Steps 18/23/30/38's own bucket
+// closers.
+describe("Push tokens - adversarial hardening (Step 55)", () => {
+  it("accepts a token at exactly MAX_PUSH_TOKEN_LENGTH and rejects one character over, with 400", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "length-boundary");
+
+    // MAX_PUSH_TOKEN_LENGTH is 4096 (schemas/userFeatures.ts) - a real FCM
+    // token is nowhere near this long, but the boundary itself is what a
+    // schema-level maxLength promises and what needs verifying directly,
+    // not assumed from reading the schema definition alone.
+    const atLimit = "a".repeat(4096);
+    const overLimit = "a".repeat(4097);
+
+    const withinLimit = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: atLimit, platform: "android" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(withinLimit.statusCode).toBe(204);
+
+    const beyondLimit = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: overLimit, platform: "android" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(beyondLimit.statusCode).toBe(400);
+
+    await app.inject({
+      method: "DELETE",
+      url: "/v1/me/push-tokens",
+      payload: { token: atLimit },
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    await app.close();
+  });
+
+  it("stores a SQL-injection-shaped token value inertly, as opaque data, never as executable SQL", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "injection-shaped");
+    const maliciousToken = `'; DROP TABLE push_tokens; --${uniqueToken("injection")}`;
+
+    const register = await app.inject({
+      method: "POST",
+      url: "/v1/me/push-tokens",
+      payload: { token: maliciousToken, platform: "ios" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(register.statusCode).toBe(204);
+
+    // The payload round-trips as inert stored data, and the table it
+    // pretended to drop is still there and still queryable - proven
+    // directly against the real table, not merely inferred from the 204.
+    const list = await app.inject({
+      method: "GET",
+      url: "/v1/me/push-tokens",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(list.json().pushTokens.map((t: { token: string }) => t.token)).toContain(maliciousToken);
+    const stillExists = await pool.query("SELECT to_regclass('public.push_tokens') AS reg");
+    expect(stillExists.rows[0].reg).toBe("push_tokens");
+
+    await app.inject({
+      method: "DELETE",
+      url: "/v1/me/push-tokens",
+      payload: { token: maliciousToken },
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    await app.close();
+  });
+});

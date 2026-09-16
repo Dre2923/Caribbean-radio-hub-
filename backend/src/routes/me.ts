@@ -9,7 +9,7 @@ import {
   EmailAlreadyRegisteredError,
   InvalidCountryError,
 } from "../repositories/usersRepository.js";
-import { errorResponseSchema, userSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema, userSchema } from "../schemas/common.js";
 import {
   MAX_EMAIL_LENGTH,
   MAX_DISPLAY_NAME_LENGTH,
@@ -175,7 +175,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
           properties: {
             email: { type: "string", format: "email", maxLength: MAX_EMAIL_LENGTH },
             displayName: { type: "string", minLength: 1, maxLength: MAX_DISPLAY_NAME_LENGTH },
-            countryId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
           },
         },
         response: {

@@ -8,7 +8,7 @@ import {
   type StationHealthCheck,
 } from "../repositories/stationHealthRepository.js";
 import { checkStreamHealth } from "../utils/streamHealthCheck.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import { stationHealthCheckSchema, stationReliabilitySchema } from "../schemas/stationHealth.js";
 
 function stationNotFound(reply: FastifyReply) {
@@ -94,7 +94,7 @@ export async function stationHealthRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           201: {
@@ -124,7 +124,7 @@ export async function stationHealthRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         querystring: {
           type: "object",
@@ -167,7 +167,7 @@ export async function stationHealthRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         querystring: {
           type: "object",

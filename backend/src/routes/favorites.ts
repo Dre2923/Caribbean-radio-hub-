@@ -13,7 +13,7 @@ import {
   DEFAULT_FAVORITE_LIST_LIMIT,
   MAX_FAVORITE_LIST_LIMIT,
 } from "../repositories/favoritesRepository.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import { favoriteStationSchema, favoriteEventSchema } from "../schemas/userFeatures.js";
 
 function stationNotFound(reply: FastifyReply) {
@@ -111,7 +111,7 @@ export async function favoritesRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: {
           type: "object",
-          properties: { stationId: { type: "integer", minimum: 1 } },
+          properties: { stationId: idSchema },
           required: ["stationId"],
         },
         response: {
@@ -150,7 +150,7 @@ export async function favoritesRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: {
           type: "object",
-          properties: { stationId: { type: "integer", minimum: 1 } },
+          properties: { stationId: idSchema },
           required: ["stationId"],
         },
         response: {
@@ -214,7 +214,7 @@ export async function favoritesRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: {
           type: "object",
-          properties: { eventId: { type: "integer", minimum: 1 } },
+          properties: { eventId: idSchema },
           required: ["eventId"],
         },
         response: {
@@ -253,7 +253,7 @@ export async function favoritesRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: {
           type: "object",
-          properties: { eventId: { type: "integer", minimum: 1 } },
+          properties: { eventId: idSchema },
           required: ["eventId"],
         },
         response: {

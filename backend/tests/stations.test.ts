@@ -1358,3 +1358,46 @@ describe("radio station logo/artwork metadata (Step 18)", () => {
     await app.close();
   });
 });
+
+// Step 55 (User Features bucket closing pass): a sweep across the whole
+// codebase, not just that bucket's own routes, found every id-shaped
+// integer field across this entire API (this file's countryId/genreId/
+// languageId/:id included) enforced only `minimum: 1` with no upper bound
+// - a value like 99999999999999999999 passed AJV's own integer check (it's
+// still a whole number in IEEE-754 double precision) and reached Postgres,
+// whose `integer` columns raised a raw "value out of range" error - an
+// unhandled 500, not the clean 400 a malformed id should produce. Fixed
+// with one shared, bounded `idSchema` (`schemas/common.ts`) used
+// everywhere instead of a bespoke unbounded inline schema. This block
+// proves the fix reached this file's own three distinct call-site shapes
+// (path param, querystring filter) - `tests/favorites.test.ts`'s own
+// adversarial block proves it for a body-adjacent path param, and
+// `tests/listeningHistory.test.ts` for a body field.
+describe("Integer id upper bound (Step 55)", () => {
+  it("rejects an out-of-int4-range :id path param with 400, not a raw database error", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/stations/99999999999999999999",
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an out-of-int4-range countryId/genreId/languageId querystring filter with 400", async () => {
+    const app = buildApp();
+    const byCountry = await app.inject({
+      method: "GET",
+      url: "/v1/stations?countryId=99999999999999999999",
+    });
+    expect(byCountry.statusCode).toBe(400);
+
+    const byGenre = await app.inject({
+      method: "GET",
+      url: "/v1/stations?genreId=99999999999999999999",
+    });
+    expect(byGenre.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

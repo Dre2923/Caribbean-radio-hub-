@@ -13,7 +13,7 @@ import {
   LastAdminError,
   type UserRole,
 } from "../repositories/usersRepository.js";
-import { errorResponseSchema, userSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema, userSchema } from "../schemas/common.js";
 import { MAX_USER_SEARCH_LENGTH, USER_ROLES } from "../schemas/users.js";
 import {
   MAX_EMAIL_LENGTH,
@@ -160,7 +160,7 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
             email: { type: "string", format: "email", maxLength: MAX_EMAIL_LENGTH },
             password: { type: "string", minLength: MIN_PASSWORD_LENGTH },
             displayName: { type: "string", minLength: 1, maxLength: MAX_DISPLAY_NAME_LENGTH },
-            countryId: { type: "integer", minimum: 1 },
+            countryId: idSchema,
           },
         },
         response: {
@@ -259,7 +259,7 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         response: {
           200: {
@@ -292,7 +292,7 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
         params: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "integer", minimum: 1 } },
+          properties: { id: idSchema },
         },
         body: {
           type: "object",

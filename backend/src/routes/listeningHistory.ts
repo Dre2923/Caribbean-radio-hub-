@@ -7,7 +7,7 @@ import {
   DEFAULT_HISTORY_LIST_LIMIT,
   MAX_HISTORY_LIST_LIMIT,
 } from "../repositories/listeningHistoryRepository.js";
-import { errorResponseSchema } from "../schemas/common.js";
+import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import { listeningHistoryEntrySchema } from "../schemas/userFeatures.js";
 
 function badRequest(reply: FastifyReply, message: string) {
@@ -42,7 +42,7 @@ export async function listeningHistoryRoutes(app: FastifyInstance): Promise<void
           additionalProperties: false,
           required: ["stationId"],
           properties: {
-            stationId: { type: "integer", minimum: 1 },
+            stationId: idSchema,
           },
         },
         response: {

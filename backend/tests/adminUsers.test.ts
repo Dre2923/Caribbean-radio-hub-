@@ -353,3 +353,26 @@ describe("PATCH /v1/admin/users/:id (role management)", () => {
     await app.close();
   });
 });
+
+// Step 55 (User Features bucket closing pass): see tests/stations.test.ts's
+// own identical describe block for the full finding - every id-shaped
+// integer field across this API, this file's admin :id routes included,
+// enforced only `minimum: 1` with no upper bound, so an out-of-int4-range
+// value reached Postgres and raised a raw, unhandled 500 instead of a
+// clean 400. Fixed with the shared, bounded `idSchema`.
+describe("Integer id upper bound (Step 55)", () => {
+  it("rejects an out-of-int4-range admin :id path param with 400, not a raw database error", async () => {
+    const app = buildApp();
+    const admin = await registerAdmin(app, "id-bound", "admin");
+    createdUserIds.push(admin.userId);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/admin/users/99999999999999999999",
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

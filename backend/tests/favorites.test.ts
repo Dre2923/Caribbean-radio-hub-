@@ -521,3 +521,60 @@ describe("Favorites - events", () => {
     await app.close();
   });
 });
+
+// Step 55: the User Features bucket's (51-54) closing adversarial
+// hardening pass, the same "the closing step reviews and hardens
+// everything the bucket built" shape as Steps 18/23/30/38's own bucket
+// closers - covering both this file's own routes (:stationId/:eventId
+// path params) and, alongside pushTokens.test.ts/listeningHistory.test.ts/
+// notificationPreferences.test.ts's own new blocks, the whole bucket.
+describe("Favorites - adversarial hardening (Step 55)", () => {
+  it("rejects non-integer, negative, zero, and float path params with 400, never reaching the repository layer", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "adversarial-params");
+    const malformedIds = ["abc", "-1", "0", "1.5", "1e10", "1%20OR%201=1", "'; DROP TABLE users;--"];
+
+    for (const rawId of malformedIds) {
+      const putStation = await app.inject({
+        method: "PUT",
+        url: `/v1/me/favorites/stations/${rawId}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(putStation.statusCode).toBe(400);
+
+      const putEvent = await app.inject({
+        method: "PUT",
+        url: `/v1/me/favorites/events/${rawId}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(putEvent.statusCode).toBe(400);
+    }
+
+    // The malicious-looking payloads never reached SQL - confirmed by the
+    // real users table (this test's own account included) still being
+    // exactly as populated as it should be, not dropped.
+    const usersStillExist = await pool.query("SELECT 1 FROM users LIMIT 1");
+    expect(usersStillExist.rowCount).toBeGreaterThan(0);
+
+    await app.close();
+  });
+
+  it("rejects an oversized path param id (beyond a plausible 32-bit integer) with 400, not a database error", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "adversarial-oversized-id");
+
+    // Postgres's own integer columns (radio_stations.id, events.id) are
+    // 32-bit - a value like this could otherwise reach the repository
+    // layer and surface as a raw, unhandled "integer out of range"
+    // database error (a 500) rather than a clean, expected 400/404.
+    const oversizedId = "99999999999999999999";
+    const response = await app.inject({
+      method: "PUT",
+      url: `/v1/me/favorites/stations/${oversizedId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});

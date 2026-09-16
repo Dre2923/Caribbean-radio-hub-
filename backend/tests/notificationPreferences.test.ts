@@ -121,3 +121,64 @@ describe("Notification preferences", () => {
     await app.close();
   });
 });
+
+// Step 55: the User Features bucket's (51-54) closing adversarial
+// hardening pass, the same "the closing step reviews and hardens
+// everything the bucket built" shape as Steps 18/23/30/38's own bucket
+// closers.
+//
+// This block started life testing the opposite expectation - that an
+// unrecognized field like `role` should make the whole PATCH fail with
+// 400, on the assumption that `additionalProperties: false` always means
+// "reject". Live-probing against a running server (before writing the
+// fix this test now encodes) revealed that isn't what happens: Fastify's
+// ajv compiler defaults to `removeAdditional: true`
+// (@fastify/ajv-compiler's own default-ajv-options.js), and per ajv's own
+// documented semantics that makes an explicit `additionalProperties:
+// false` silently delete the unrecognized field and let validation pass,
+// rather than fail it. Changing that default was the obvious "fix" - and
+// was reverted after it broke `tests/adminRole.test.ts`'s own
+// pre-existing "strips a client-supplied role field on registration - role
+// can never be self-assigned" test (plus two equivalent ones in
+// stations.test.ts/events.test.ts): this codebase already relies on that
+// exact silent-strip behavior, deliberately and by design, as its
+// mass-assignment defense - dropping a forbidden field and proceeding
+// with the request rather than rejecting it outright. So the real finding
+// here isn't a bug at all: it's that this endpoint already benefits from
+// the same protection, previously unverified for this specific route.
+describe("Notification preferences - adversarial hardening (Step 55)", () => {
+  it("silently ignores an unrecognized field (mass-assignment defense) rather than applying or erroring on it", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "mass-assignment");
+
+    const unknownFieldAlone = await app.inject({
+      method: "PATCH",
+      url: "/v1/me/notification-preferences",
+      payload: { role: "admin" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    // No recognized field was present, but the unrecognized one is
+    // dropped rather than rejected - the identical shape as registration
+    // silently stripping a client-supplied `role`, confirmed as this
+    // codebase's own deliberate convention, not asserted from scratch here.
+    expect(unknownFieldAlone.statusCode).toBe(200);
+    expect(unknownFieldAlone.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: true,
+    });
+
+    const mixedFields = await app.inject({
+      method: "PATCH",
+      url: "/v1/me/notification-preferences",
+      payload: { favoriteStationAvailabilityChanges: false, role: "admin" },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    // The one recognized field alongside it still applies normally - only
+    // the unrecognized one is silently discarded.
+    expect(mixedFields.statusCode).toBe(200);
+    expect(mixedFields.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: false,
+    });
+
+    await app.close();
+  });
+});
