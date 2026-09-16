@@ -2632,6 +2632,73 @@ consumption (API4), sensitive business flows (API6), unsafe third-party
 consumption (API10), and now broken authentication (API2) — a complete,
 sourced, defensible security posture rather than a partial pass.
 
+### Reliability closing pass: health checks and graceful shutdown (Step 60)
+
+The closing step of the Reliability/Security/Monitoring bucket (Steps
+58-60). Reviewed the bucket's own reliability half — liveness/readiness
+health checks and process lifecycle — rather than assuming it was
+complete simply because no step had explicitly named it yet.
+
+**Health checks (verified already correct).** `GET /health` (liveness,
+no external dependency — always `200` if the process is running) and
+`GET /health/db` (readiness — a real `SELECT 1`, `503` if the database is
+unreachable) already exist and already follow the standard
+liveness/readiness split a container orchestrator expects. No gap found
+here — recorded as a real, checked result, not skipped silently.
+
+**Graceful shutdown (real gap found and fixed).** `src/index.ts`'s
+`shutdown()` (triggered by `SIGINT`/`SIGTERM`) stopped all three
+background workers and called `app.close()`, but never closed the
+Postgres connection pool — every test file in this project's own suite
+already calls `pool.end()` in its own `afterAll`, but production's real
+shutdown path never did the same. Added `await pool.end()` after
+`app.close()` (ordering matters: `app.close()` drains in-flight HTTP
+requests first, and those requests still need a working database
+connection to finish — closing the pool any earlier would risk failing a
+request that was already in progress). The concrete risk this closes:
+without it, the background workers' own `clearInterval` calls stop
+*future* scheduled runs, but can't cancel a query one of them already has
+in flight at the exact moment a signal arrives — the immediately-following
+`process.exit()` would tear down that query mid-write. `pool.end()`
+instead waits for every checked-out client to be returned before
+resolving, giving a genuinely in-flight query the chance to finish first.
+
+An honest, directly-discovered limitation, not an overclaim: a plain
+"does the DB connection eventually disappear after shutdown" test cannot
+actually distinguish this fix from its absence. Confirmed empirically —
+temporarily removing the `await pool.end()` line and re-running a
+connection-count-based test still showed the connection gone immediately
+afterward, every time, because Node's own `process.exit()` closes the
+socket fast enough that Postgres notices the drop essentially
+instantly regardless. The fix's real, narrower value (not truncating a
+genuinely in-flight background-worker query) is a race condition too
+timing-sensitive to reproduce as a reliable, non-flaky automated test —
+stated plainly in both the code comment and the test's own comment rather
+than shipping a test that looks more thorough than it actually is, the
+same "an honest, documented residual limitation" standard already applied
+to `ssrfProtection.ts`'s own DNS-rebinding note (Step 58).
+
+Also newly added: `src/index.ts` is a genuinely side-effecting entrypoint
+script (importing it starts a real HTTP listener and three real
+background workers immediately), so it can't be exercised in-process via
+`app.inject()` the way every other behavior in this suite is.
+`tests/gracefulShutdown.test.ts` spawns the real compiled server as a
+child process, confirms it's actually accepting real HTTP requests
+(including a real DB-backed one via `GET /health/db`), sends it a real
+`SIGTERM`, and proves it exits cleanly (`code 0`) within a bounded
+timeout rather than hanging or crashing — the same "verify the real
+thing, not a stand-in for it" standard already applied to
+`tests/streamHealthCheck.test.ts`'s own real local test servers.
+
+Verified: clean build and lint; the full 441-test suite (1 new) passing
+three consecutive runs; `npm audit` clean; `gitleaks` clean; and a
+live-server run against a running compiled server in the real dev
+environment — confirmed `/health`/`/health/db` both `200` while running, a
+real `SIGTERM` sent to the actual process, the `"Received SIGTERM,
+shutting down gracefully"` log line appearing, and the process confirmed
+fully exited (no orphaned process, the listening port confirmed closed)
+shortly after.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

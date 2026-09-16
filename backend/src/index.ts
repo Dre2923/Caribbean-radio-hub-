@@ -1,6 +1,7 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
 import { logger } from "./utils/logger.js";
+import { pool } from "./db/pool.js";
 import { createEmailProvider } from "./email/provider.js";
 import { startEmailOutboxWorker } from "./email/outboxWorker.js";
 import { startHealthCheckWorker } from "./stationHealth/healthCheckWorker.js";
@@ -39,7 +40,26 @@ async function shutdown(signal: string): Promise<void> {
   stopEmailOutboxWorker();
   stopHealthCheckWorker();
   stopAutoDeactivationWorker();
+  // app.close() first, not pool.end() first - it drains in-flight HTTP
+  // requests before resolving, and those requests still need a working
+  // database connection to finish. Only once every request has actually
+  // completed is it safe to close the pool. Every test file in this
+  // project's own suite already calls pool.end() in its own afterAll -
+  // production's shutdown path never did the same, a real, previously
+  // unnoticed gap: the three background workers stopped above clear their
+  // own interval timers, but that can't cancel a query one of them already
+  // has in flight at the exact moment SIGTERM arrives. Without pool.end(),
+  // the immediately-following process.exit() would tear down that
+  // in-flight query mid-write; pool.end() instead waits for every checked-
+  // out client to be returned before resolving, so a genuinely in-flight
+  // query gets to finish first. (Empirically, a fully idle connection with
+  // no in-flight query closes just as promptly either way once the
+  // process exits - Node's own process teardown closes the socket fast
+  // enough that Postgres notices immediately regardless - so this
+  // specific benefit is real but only observable under that narrow race,
+  // not as a general "connections linger without this" difference.)
   await app.close();
+  await pool.end();
   process.exit(0);
 }
 
