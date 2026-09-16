@@ -1,0 +1,14 @@
+# Gitleaks false-positive allowlist. Each line is the exact Fingerprint
+# gitleaks itself prints for a finding (path:rule-id:line, produced by
+# running `gitleaks detect --no-git --source .` from the backend/
+# directory - the same invocation .github/workflows/backend-ci.yml uses).
+# Scoped to an exact line, not a whole file/path - a real secret
+# introduced anywhere else in the same file is still caught.
+
+# tests/pushNotifications.test.ts:41 - a deliberately fake, PEM-*shaped*
+# private key ("abc" as the key body) used only to unit-test
+# parseFcmConfig's field-presence validation (src/config/env.ts) - it
+# never needs to be a real, parseable key, since parseFcmConfig only
+# checks that project_id/client_email/private_key are present strings.
+# Confirmed not a real secret before allowlisting, not assumed.
+tests/pushNotifications.test.ts:private-key:41

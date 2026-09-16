@@ -2267,8 +2267,111 @@ already applied once for `email_outbox` (Step 09) and now for
 ## CI
 
 `.github/workflows/backend-ci.yml` runs on every push/PR touching
-`backend/**`: install, build, lint, migrate a real Postgres service
-container, run the full test suite, and `npm audit --audit-level=high`
-(fails the build on a high/critical vulnerability) — the same sequence
-manually verified by hand at every step so far, now enforced automatically
-on every future change rather than relying on remembering to run it.
+`backend/**`: install, scan for secrets, build, lint, statically analyze
+for security issues, migrate a real Postgres service container, run the
+full test suite, and `npm audit --audit-level=high` (fails the build on a
+high/critical vulnerability) — the same sequence manually verified by hand
+at every step so far, now enforced automatically on every future change
+rather than relying on remembering to run it.
+
+## CI security gates and production monitoring (Step 58)
+
+The first step of the Reliability / Security / Monitoring bucket (Steps
+58–60) — real, verified additions to the CI pipeline and a first
+production-observability surface, not the whole bucket at once.
+
+### Secrets scanning (gitleaks)
+
+`.github/workflows/backend-ci.yml`'s "Scan for secrets" step installs the
+[gitleaks](https://github.com/gitleaks/gitleaks) CLI directly from its
+GitHub release (checked live during this step's research: the CLI itself
+is MIT-licensed and free for CI use — deliberately *not* the
+`gitleaks-action` Marketplace wrapper, whose v2+ requires a paid EULA for
+organization use; the underlying tool it wraps has no such restriction)
+and scans the **checked-out working tree** (`--no-git`), not full git
+history. That's a deliberate scope, not an oversight: a one-time full-history
+scan was run manually during this step's own verification (56 commits,
+confirmed clean of any real secret — the single flagged historical string
+was the same test-fixture false positive `.gitleaksignore` allowlists
+below) — a real secret in an already-merged historical commit can't be
+un-committed by a check on today's PR anyway, so the ongoing CI gate scans
+exactly what matters for blocking a merge: the tree as it would ship.
+
+`backend/.gitleaksignore` allowlists exactly one confirmed false positive
+by its precise fingerprint (path:rule:line, not a whole-file or
+whole-rule exemption): `tests/pushNotifications.test.ts`'s deliberately
+fake, PEM-*shaped* private key fixture (used only to test
+`parseFcmConfig`'s field-presence validation — it never needs to be a
+real, parseable key). A real secret introduced anywhere else in that same
+file, or on a different line, is still caught.
+
+### Static analysis (Semgrep)
+
+The "Static analysis" step installs a pinned Semgrep CLI version via pip
+and runs Semgrep's own `p/ci` registry ruleset — Semgrep's documented,
+curated default for CI use specifically because of its low false-positive
+rate, as opposed to enabling every registry rule at once. The Semgrep CLI
+engine itself is LGPL-2.1 and free/unlimited for CI use with no login
+required (checked live, not assumed: only the separate, opt-in Semgrep
+AppSec Platform is a paid product, never invoked here). Verified locally
+during this step with a custom sanity rule confirming Semgrep correctly
+parses 100% of this codebase's TypeScript and finds zero raw
+SQL-string-concatenation patterns — an independent, tool-based
+confirmation of this API's own "every query is parameterized" standing
+claim, not just a restatement of it.
+
+### Production metrics (`GET /metrics`)
+
+A Prometheus-compatible scrape endpoint, unversioned like `/health` —
+infrastructure surface for a monitoring scraper, not API contract a
+client depends on. Backed by
+[`@prometheus-io/client`](https://github.com/prometheus/client_js)
+(Apache-2.0) — the official Prometheus project's own Node.js client,
+which has replaced the long-standing community `prom-client` package
+(confirmed via npm during this step's own research: `prom-client` is now
+marked deprecated upstream in favor of this one, despite its much longer
+install history — recall would have picked the wrong package here,
+exactly the scenario this build's "verify, don't assume" licensing/technical
+standard exists for).
+
+- **Default Node.js process metrics** (CPU, memory, event-loop lag, GC,
+  active handles) via a single `collectDefaultMetrics()` call — the same
+  "don't hand-roll what a real library already does correctly" reasoning
+  already applied to choosing `nodemailer` over a hand-rolled SMTP client.
+- **`http_request_duration_seconds`**, a histogram recorded once per
+  request via a single `onResponse` hook in `app.ts` — covering every
+  route this API serves without instrumenting each one individually.
+  Labeled by `method`/`route`/`status_code`, where `route` is the
+  **templated** pattern Fastify itself resolved the request to (e.g.
+  `/v1/stations/:id`), never the literal request URL — verified directly:
+  a request against a real numeric station id produces a metric labeled
+  `route="/v1/stations/:id"`, with the actual id nowhere in the output, so
+  the metric can never fan out into one time series per distinct id/value
+  a caller happens to send.
+- **Gated by `METRICS_TOKEN` in production, open in development/test.**
+  The identical "restricted only in production" shape already established
+  for `ENABLE_API_DOCS` — an unauthenticated process-internals endpoint
+  reachable on a public network is a real information-disclosure risk
+  (route names, request volumes, error rates), so `METRICS_TOKEN` is
+  required at startup in production (the server refuses to start without
+  it, the same fail-fast posture as `JWT_SECRET`) and checked via
+  `Authorization: Bearer <token>` with a constant-time comparison; a local
+  Prometheus/curl check needs no setup at all outside production.
+- **Alert thresholds** (for whatever scrapes this endpoint — Prometheus
+  Alertmanager or equivalent) should start from: `http_request_duration_seconds`
+  P99 exceeding 1s sustained for 5 minutes on any route other than
+  `POST /v1/voice/command` (this API's own documented heaviest single
+  endpoint); `process_resident_memory_bytes` approaching the deployment's
+  configured memory limit; and the existing `station_health_checks`/
+  `email_outbox` tables' own failure counts (not yet exposed as metrics
+  here — a natural follow-up for a later step in this bucket, not invented
+  speculatively now).
+
+Verified: clean build and lint; the full 371-test suite (10 new in
+`tests/metrics.test.ts`) passing; `npm audit` clean; `gitleaks`/`semgrep`
+run locally against the real repository as described above, both clean
+after the one documented, justified allowlist entry; and a direct check
+that `GET /metrics` returns real Prometheus exposition-format text
+containing both a default process metric and a real recorded HTTP request
+duration for an actual request this test suite made, labeled correctly by
+route pattern rather than literal URL.

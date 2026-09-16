@@ -126,6 +126,26 @@ export function parseFcmConfig(
   return { projectId: project_id, clientEmail: client_email, privateKey: private_key };
 }
 
+// Step 58: gates GET /metrics. Required in production (an unauthenticated
+// process-internals endpoint left open on a public network is a real
+// information-disclosure risk - route names, request volumes, error
+// rates); left unset and unenforced outside production, the identical
+// "restricted only in production" shape already established for
+// enableApiDocs above, so a local Prometheus/curl check needs no setup.
+// A pure function of its two inputs (like parseSmtpConfig/parseFcmConfig
+// above) rather than reading process.env directly, for the same
+// unit-testability reason - a test exercises every NODE_ENV/METRICS_TOKEN
+// combination directly without mutating global state or reloading modules.
+export function resolveMetricsToken(nodeEnv: string, rawToken: string | undefined): string | undefined {
+  if (nodeEnv === "production" && !rawToken) {
+    throw new Error(
+      "Missing required environment variable: METRICS_TOKEN (required in production - " +
+        "GET /metrics would otherwise be reachable, unauthenticated, by anyone)",
+    );
+  }
+  return rawToken;
+}
+
 // Used to build the actual link inside the password-reset email. Required
 // in production (no silent guess about where the frontend lives); defaults
 // to a typical local dev server address otherwise so the flow works
@@ -207,4 +227,5 @@ export const env = {
   frontendUrl: frontendUrl(),
   adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
   fcm: parseFcmConfig(),
+  metricsToken: resolveMetricsToken(process.env.NODE_ENV ?? "development", process.env.METRICS_TOKEN),
 };

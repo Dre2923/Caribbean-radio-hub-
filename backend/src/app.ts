@@ -21,6 +21,8 @@ import { favoritesRoutes } from "./routes/favorites.js";
 import { listeningHistoryRoutes } from "./routes/listeningHistory.js";
 import { pushTokensRoutes } from "./routes/pushTokens.js";
 import { notificationPreferencesRoutes } from "./routes/notificationPreferences.js";
+import { metricsRoutes } from "./routes/metrics.js";
+import { httpRequestDurationSeconds } from "./metrics/registry.js";
 import { pinoLogger } from "./utils/logger.js";
 import { env } from "./config/env.js";
 import { getTokenVersion, getUserRole } from "./repositories/usersRepository.js";
@@ -191,6 +193,24 @@ export function buildApp() {
   // migration path - versioning them would only add churn to
   // infrastructure config for no compatibility benefit.
   app.register(healthRoutes);
+  app.register(metricsRoutes);
+
+  // Step 58: records every request's duration into the shared Prometheus
+  // histogram - onResponse (not onRequest) is the correct hook since it
+  // fires after reply.elapsedTime and reply.statusCode are both final,
+  // and it fires for every request regardless of how the response was
+  // produced (a normal handler return, an early reply.send(), or the
+  // global error handler below) or which one of this app's many route
+  // files handled it, so a single hook here covers the whole API rather
+  // than instrumenting each route individually.
+  app.addHook("onResponse", (request, reply, done) => {
+    const route = request.routeOptions.url ?? "unmatched";
+    httpRequestDurationSeconds.observe(
+      { method: request.method, route, status_code: String(reply.statusCode) },
+      reply.elapsedTime / 1000,
+    );
+    done();
+  });
 
   // Every business-domain route lives under /v1. This app has no shipped
   // clients yet, so a clean versioned start costs nothing now - but mobile

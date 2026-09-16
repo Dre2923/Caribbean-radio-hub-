@@ -57,11 +57,38 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Step 58 (Reliability/Security/Monitoring): scans the checked-out
+      # working tree (not git history - a one-time full-history audit was
+      # performed manually, see backend/README.md "CI security gates") for
+      # anything secret-shaped that shouldn't be committed. Runs before
+      # build/test so a leaked credential fails fast, before spending time
+      # on the rest of the job. The gitleaks CLI itself (github.com/gitleaks/
+      # gitleaks) is MIT-licensed and free for CI use - installed directly
+      # from its GitHub release rather than via the gitleaks-action
+      # Marketplace wrapper, whose v2+ license requires a paid EULA for
+      # organization use; the underlying CLI has no such restriction.
+      - name: Scan for secrets (gitleaks)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --no-git --source . --redact -v
+
       - name: Build (TypeScript)
         run: npm run build
 
       - name: Lint
         run: npm run lint
+
+      # Step 58: free-tier static analysis via Semgrep's own curated,
+      # low-false-positive-rate "p/ci" registry ruleset (Semgrep's own
+      # recommended default for CI use, per its documentation) - the
+      # Semgrep CLI engine itself is LGPL-2.1 and free/unlimited for CI use
+      # with no login required; only the separate, opt-in Semgrep AppSec
+      # Platform is a paid product, not used here.
+      - name: Static analysis (semgrep)
+        run: |
+          python3 -m pip install --quiet semgrep==1.177.0
+          semgrep scan --config p/ci --error src tests
 
       - name: Run database migrations
         run: npm run migrate:up
