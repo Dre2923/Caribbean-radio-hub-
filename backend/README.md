@@ -3006,6 +3006,22 @@ catch three real bugs by temporarily:
 In every case, restoring the fix immediately and confirming a
 byte-identical diff against the pre-bug version.
 
+## Production Release Gate (Step 64)
+
+The final, terminal step of the 64-step manifest - see `docs/RELEASE_GATE.md`
+for the full go/no-go checklist. It adds no new code; it's a cited review
+of everything Steps 01-63 already built and verified (every OWASP API
+Security Top 10 item, secrets scanning, static analysis, dependency
+audit, reliability/chaos testing, background workers, observability,
+fail-fast production configuration, documentation currency), plus an
+honest accounting of what was explicitly deferred (MFA, DNS-rebinding
+closure, SOC 2/pen-testing) versus what's out of this release's scope
+entirely (the Flutter mobile client, Steps 39-50, which remains
+**Specified, not built** per the capability boundary verified before any
+work began).
+
+**Decision: GO**, tagged `v1.0.0-backend`.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,
