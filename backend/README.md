@@ -2895,6 +2895,117 @@ were correctly rolled up by `runAdPerformanceRollup` into
 returning exactly the expected counts. All live test data deleted
 afterward.
 
+## Production QA (Step 63)
+
+A terminal step with no more detailed original scope than its own title in
+`docs/BUILD_MANIFEST.md` - `docs/ARCHITECTURE_PLAN.md` itself calls Steps
+63-64 "inherently terminal." Scoped against real QA practice into three
+checks, none of which had ever actually been exercised before, and every
+one of which found a genuine gap rather than confirming a null result.
+
+### Fresh migration bootstrap
+
+This build's 33 migrations had only ever been applied incrementally to the
+same two long-lived dev/test databases across the whole session - never
+replayed from a genuinely empty database in one sweep, the exact check a
+real first-time production deployment needs. Verified directly: created a
+throwaway database, ran all 33 migrations up from nothing (clean - all 23
+tables, 13 seeded countries, 12 genres, 4 languages, 12 event categories
+all present), all 33 down to a fully empty schema (clean, correct
+foreign-key-aware teardown order with zero constraint errors), then back
+up again (clean) - a real up/down/up round trip on the full chain, not
+assumed from the individual per-migration "up/down/up" check each step's
+own commit already did in isolation for just its own new migration(s).
+
+### OpenAPI document structural validity (real bug found and fixed)
+
+`GET /docs/json`'s generated document had never been checked against the
+actual OpenAPI specification - only confirmed, implicitly, to parse as
+JSON and not crash Swagger UI's own renderer. Validated with `swagger-cli`
+and `@apidevtools/swagger-parser` (both wrap the official OpenAPI
+meta-schema, the same class of real external validator either way) and
+found 430 real structural violations: this codebase's own nullable-field
+convention - `schemas/common.ts`'s `type: [X, "null"]` array form, used
+throughout every schema file - is valid JSON Schema but not valid under
+OpenAPI 3.0's own stricter subset, which requires the OpenAPI-specific
+`nullable: true` keyword instead of a type array.
+
+Fixed with a one-line change in `app.ts` - declaring the document as
+OpenAPI **3.1.0** instead of the `@fastify/swagger` default of 3.0.3.
+OpenAPI 3.1 adopted full JSON Schema 2020-12 compatibility specifically to
+remove that exact divergence, so this fix uses the spec version that
+actually matches this API's own real schema style, rather than rewriting
+every nullable field across the codebase to a keyword only the older
+version needs. Confirmed the bundled `swagger-ui-dist` (5.32.6) has real
+OpenAPI 3.1 rendering support and `/docs` still returns a real `200` with
+the Swagger UI bundle.
+
+Added `tests/openapi.test.ts` (new `@apidevtools/swagger-parser`
+devDependency, MIT-licensed, confirmed 0 vulnerabilities via `npm audit`)
+so this exact regression class - a future schema addition that's valid
+JSON Schema but not valid OpenAPI - fails CI automatically going forward,
+rather than only being caught if someone happens to check by hand again.
+
+### Production-mode fail-fast startup and real boot (two more real gaps found)
+
+Checked directly against `.github/workflows/backend-ci.yml`: this whole
+build has run its own compiled server with `NODE_ENV=production` **zero
+times** - CI always sets `NODE_ENV: test` - despite Step 58 adding
+`METRICS_TOKEN` enforcement specifically for that mode. Spawning the real
+compiled entrypoint (`dist/index.js`) under actual production conditions,
+the same real-child-process pattern `tests/gracefulShutdown.test.ts`
+already established, surfaced a second, independent gap while
+investigating the first: `config/env.ts`'s `frontendUrl()` also requires
+`FRONTEND_URL` in production (used to build the password-reset email
+link) - also never once exercised end-to-end, and this repository's own
+`.env` doesn't set it at all.
+
+A real trap found and worked around while writing the test itself, not
+assumed: `dotenv/config` (imported at the top of `config/env.ts`) silently
+backfills any variable omitted from a spawned child process's environment
+from this repo's real `.env` file - which has a real `JWT_SECRET` for
+local development - unless the child's working directory points somewhere
+with no `.env` to find. Confirmed directly: a first version of the
+missing-`JWT_SECRET` test hung waiting for a crash that never came,
+because the child silently inherited a real secret from `.env` the moment
+it started. Fixed by spawning that test's child with its `cwd` set to a
+directory with no `.env` file.
+
+Added `tests/productionStartup.test.ts`:
+
+- Three fail-fast checks proven against the real compiled process: no
+  `JWT_SECRET` at all, a `JWT_SECRET` shorter than the documented 32-
+  character minimum, and no `FRONTEND_URL` in production - plus the
+  pre-existing missing-`METRICS_TOKEN` case (previously only unit-tested
+  as a pure function) now exercised end-to-end for the first time too.
+- One real production-mode boot, proving against the actual running
+  process (not a pure-function unit test) that `/health` serves real
+  traffic, `/docs/json` is genuinely unavailable (`404`, confirming
+  production's own docs-off-by-default posture actually holds at runtime),
+  and `/metrics` correctly rejects an unauthenticated scrape (`401`) and
+  accepts the configured Bearer token (`200`, real Prometheus exposition
+  text) - then a clean `SIGTERM` exit.
+
+### Verification
+
+Fresh-database migration round trip on a throwaway database (dropped
+afterward, never left behind); clean build and lint; the full 465-test
+suite (7 new) passing three consecutive runs; `npm audit` clean (0
+vulnerabilities, including the one new devDependency); proven to actually
+catch three real bugs by temporarily:
+
+1. Reverting the OpenAPI version to `3.0.3` and watching both the
+   version-string assertion and the real structural-validation assertion
+   independently fail with the exact 430 violations found above.
+2. Removing production's own `FRONTEND_URL` requirement
+   (`frontendUrl()`'s fallback) and watching the fail-fast test hang
+   waiting for a crash that no longer happened.
+3. Forcing `enableApiDocs` to always `true` and watching the
+   production-boot test's `404` assertion wrongly receive a `200`.
+
+In every case, restoring the fix immediately and confirming a
+byte-identical diff against the pre-bug version.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

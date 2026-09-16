@@ -111,6 +111,22 @@ export function buildApp() {
   if (env.enableApiDocs) {
     app.register(swagger, {
       openapi: {
+        // Explicit 3.1.0, not the library's own 3.0.3 default - this
+        // codebase's own JSON Schema fragments (schemas/common.ts's
+        // idSchema/nullableIdSchema and every optional/nullable field
+        // built the same way) use a plain `type: [X, "null"]` array, which
+        // is valid JSON Schema but NOT valid under OpenAPI 3.0's own
+        // stricter subset (which requires the OpenAPI-specific `nullable:
+        // true` keyword instead of a type array). OpenAPI 3.1 adopted full
+        // JSON Schema 2020-12 compatibility specifically to remove that
+        // divergence, so the fix here is using the version that actually
+        // matches this API's own real schema style, not rewriting every
+        // nullable field across the codebase. Confirmed via a real
+        // external validator (swagger-cli, which checks against the
+        // official OpenAPI meta-schema): 430 real structural violations
+        // under 3.0.3, zero under 3.1.0, for the identical generated
+        // paths/schemas either way.
+        openapi: "3.1.0",
         info: {
           title: "Caribbean Radio & Events Platform API",
           description:
