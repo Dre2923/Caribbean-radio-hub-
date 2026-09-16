@@ -2699,6 +2699,63 @@ shutting down gracefully"` log line appearing, and the process confirmed
 fully exited (no orphaned process, the listening port confirmed closed)
 shortly after.
 
+## Competitor Failure Test Suite (Step 61)
+
+Resilience/chaos testing across the whole system's real failure modes —
+correctly scoped last among the feature buckets per
+`docs/ARCHITECTURE_PLAN.md`, since it needs those failure modes to
+actually exist first. Rather than assuming a broad gap and rebuilding
+coverage from scratch, this step first inventoried what's already
+genuinely tested: `checkStreamHealth`'s own real-server tests already
+cover a station's own stream timing out, refusing the connection, or
+streaming forever (Step 19); the email outbox's own tests already cover
+a provider failure retrying up to a cap and then dead-lettering rather
+than losing the message (Step 07); `FcmPushProvider` already has real
+timeout protection against a hung Google endpoint (Step 58); `pool.on
+("error")` already keeps the process alive through an unexpected error on
+an idle Postgres client rather than crashing (Step 01). None of that was
+re-tested here — doing so would duplicate real, already-verified
+coverage, the same "you don't have to rebuild nothing" discipline this
+whole session has held to.
+
+What genuinely had no coverage before this step, added as
+`tests/resilience.test.ts`:
+
+- **Connection pool saturation**: a burst of 30 concurrent, real
+  DB-backed requests against a pool configured for a max of 10
+  (`db/pool.ts`) — every one still resolves with real, hydrated data.
+  This is node-postgres's own documented behavior (queue past `max`
+  rather than reject), but it had never actually been exercised against
+  this app's real routes before — a load-bearing assumption about a
+  third-party library, now directly verified rather than merely trusted.
+- **Malformed request bodies**: syntactically invalid JSON gets a clean
+  `400`, never a `500` or a hang, and never leaks a raw parser
+  stack trace to the client.
+- **Oversized request bodies**: no `bodyLimit` override exists anywhere
+  in `app.ts` (confirmed directly, not assumed), so Fastify's own
+  documented default (1 MiB) is what's actually enforced in production —
+  a payload past it gets a clean `413`, not silent unbounded buffering or
+  a crash under a hostile client.
+
+Also lived, not simulated: this very build session had Postgres itself
+drop unexpectedly on more than one occasion (a real sandbox instability,
+not a deliberately engineered chaos scenario) — in each case the running
+test suite failed every DB-touching test identically at the same call
+site rather than corrupting state or hanging indefinitely, `pg_isready`
+confirmed the outage, and every test passed cleanly again immediately
+after Postgres was restarted, with both databases' migrations confirmed
+intact. Genuine, real evidence of exactly the resilience class this step
+exists to cover, encountered directly rather than staged.
+
+Verified: clean build and lint; the full 444-test suite (3 new) passing
+three consecutive runs; `npm audit` clean; `gitleaks` clean; proven to
+actually catch a real regression by temporarily setting `bodyLimit: 10 *
+1024 * 1024` in `app.ts` (simulating an accidentally loosened limit) and
+watching the exact oversized-payload test fail with `400` (a validation
+error further downstream) instead of the correct `413`, restoring
+immediately and confirming a byte-identical diff against the pre-change
+file.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,
