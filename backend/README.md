@@ -2268,6 +2268,73 @@ override created for a real country, and `GET /v1/ads/config` for that
 country correctly resolving to the override, not the global default — all
 live test data deleted afterward.
 
+### Frequency capping and placement-level reporting (Step 57)
+
+The second and final Advertising step. Per `docs/ARCHITECTURE_PLAN.md`'s
+own scoped research, this backend owns the frequency-cap **rule**, never
+its enforcement — real mediation SDKs frequency-cap on-device, since a
+specific device's own impression count is the only place it can actually
+be tracked (most of this app's ad-eligible screens require no login at
+all, so most listeners have no persistent identity this backend could
+count against anyway). Added `maxImpressionsPerPeriod`/
+`frequencyCapPeriod` (migration `1700000024000_ad_placements_frequency_cap`,
+a plain `addColumn` on Step 56's existing table, not a rewrite of it) —
+both null (no cap) or both set (a real `session`/`day`-scoped cap),
+enforced together by a CHECK constraint backstopping the identical
+application-level validation `routes/ads.ts` already applies for
+`androidAdUnitId`/`iosAdUnitId`. Both values are returned from
+`GET /v1/ads/config` unchanged, for the client's own on-device counting.
+
+Also added first-party **placement-level reporting** — a mediation SDK's
+own dashboard doesn't give a Caribbean-specific view of how a placement
+performs. `ad_events` (migration `1700000025000_ad_events`) is a plain
+event log with no `user_id` (most impressions come from anonymous
+listeners, and per-user ad analytics was never this step's scope),
+`country_id` `SET NULL` on that country's own deletion (a real recorded
+impression shouldn't be erased just because the country row later is —
+the same reasoning already applied to `radio_stations.created_by_user_id`),
+and `placement_id` **CASCADE** — the deliberate difference from
+`country_id`, since this table's entire reporting shape is organized *by*
+placement, the identical "a diagnostic/reporting child table cascades
+with its parent" precedent `station_health_checks` (Step 19) already
+established. `POST /v1/ads/events` is public and unauthenticated (the
+same population it's reporting on), rate-limited to 60/min — looser than
+a moderation-queue endpoint (`POST /v1/events`, Step 58's own API6 fix)
+since real ad traffic can legitimately fire several of these per session,
+but still a real, dedicated bound rather than relying on the global limit
+alone. `GET /v1/admin/ads/reports` (admin-only) aggregates impressions/
+clicks per placement via a `LEFT JOIN ad_events ... GROUP BY placement`,
+with the country/date-range filters placed inside the join's own `ON`
+clause rather than a `WHERE` on the joined result — a `WHERE` there would
+silently turn the `LEFT JOIN` into an inner join for any placement whose
+only events fall outside the filtered window, dropping it from the report
+entirely instead of correctly showing a real `0` for that window. Every
+currently-existing placement always appears in the report, zero counts
+included — an admin comparing performance needs "this one got zero
+impressions" as a visible data point, not a silently missing row.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 436-test suite (13 new) passing three
+consecutive runs; `npm audit` clean; `gitleaks` clean; proven to actually
+catch two real bugs by temporarily (a) moving the report query's country/
+date filters from the join's `ON` clause to a `WHERE` clause and watching
+the exact zero-count test wrongly drop the filtered-out placement instead
+of showing it with `0`, and (b) dropping the
+`ad_placements_frequency_cap_together` CHECK constraint and confirming a
+direct SQL insert with a mismatched pair (`maxImpressionsPerPeriod: 5,
+frequencyCapPeriod: null`) was wrongly accepted at the database level, in
+both cases restoring immediately and confirming a byte-identical diff (or
+constraint re-creation) against the pre-bug state; and a live-server run
+against a running compiled server — a real placement created with a
+5-per-day cap, `GET /v1/ads/config` correctly returning that cap
+unchanged, two impressions and one click recorded, and
+`GET /v1/admin/ads/reports` correctly reflecting exactly those counts —
+all live test data deleted afterward. **This closes the Advertising
+bucket (Steps 56-57)**: ad configuration, frequency-cap rules, and
+first-party placement-level reporting, all genuinely backend-buildable
+and verified without any real ad network account, per the architecture
+plan's own honest scoping of this backend's role.
+
 ### OWASP API Security Top 10 audit (Step 58 continued)
 
 Following the CI/monitoring work above, this backend was audited against

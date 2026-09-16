@@ -2,12 +2,18 @@
 // migration 1700000023000_ad_placements's own comment for the full design
 // reasoning (mediation-SDK scope, nullable country_id as
 // global-default-vs-override, the two-constraint NULL-uniqueness fix, the
-// active-requires-ad-unit-id invariant).
+// active-requires-ad-unit-id invariant). Step 57 (part two) adds the
+// frequency-cap fields - see migration 1700000024000's own comment for
+// why this backend owns the configured *rule* only, never the counting/
+// enforcement itself.
 
 import { query } from "../db/pool.js";
 
 export const AD_FORMATS = ["banner", "interstitial", "rewarded", "native"] as const;
 export type AdFormat = (typeof AD_FORMATS)[number];
+
+export const FREQUENCY_CAP_PERIODS = ["session", "day"] as const;
+export type FrequencyCapPeriod = (typeof FREQUENCY_CAP_PERIODS)[number];
 
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
@@ -15,6 +21,21 @@ const CHECK_VIOLATION = "23514";
 
 function hasPgErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
+}
+
+// node-postgres/pg-protocol surfaces the specific constraint name a CHECK
+// violation came from as `err.constraint` - needed here because
+// ad_placements now has three separate CHECK constraints (the original
+// active-requires-ad-unit-id, plus this step's two frequency-cap ones),
+// all reported under the identical 23514 SQLSTATE. Without this, every
+// CHECK violation would be misattributed to the same error class
+// regardless of which real constraint actually fired.
+function pgErrorConstraintName(err: unknown): string | undefined {
+  if (typeof err === "object" && err !== null && "constraint" in err) {
+    const value = (err as { constraint: unknown }).constraint;
+    return typeof value === "string" ? value : undefined;
+  }
+  return undefined;
 }
 
 export class InvalidCountryError extends Error {
@@ -51,6 +72,16 @@ export class AdPlacementMissingAdUnitError extends Error {
   }
 }
 
+// Step 57: the same "validated up front, backstopped at the database"
+// posture as AdPlacementMissingAdUnitError above, this time for the
+// frequency-cap pair's own "both or neither" invariant.
+export class InvalidFrequencyCapError extends Error {
+  constructor() {
+    super("maxImpressionsPerPeriod and frequencyCapPeriod must be set together, or not at all");
+    this.name = "InvalidFrequencyCapError";
+  }
+}
+
 export interface AdPlacement {
   id: number;
   placementKey: string;
@@ -59,6 +90,13 @@ export interface AdPlacement {
   androidAdUnitId: string | null;
   iosAdUnitId: string | null;
   isActive: boolean;
+  // Step 57: null together means no cap configured - the client applies
+  // no frequency limit of its own. Both set means the client should show
+  // this placement at most maxImpressionsPerPeriod times per
+  // frequencyCapPeriod, counted and enforced entirely client-side (see
+  // migration 1700000024000's own comment for why).
+  maxImpressionsPerPeriod: number | null;
+  frequencyCapPeriod: FrequencyCapPeriod | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,9 +109,15 @@ interface AdPlacementRow {
   android_ad_unit_id: string | null;
   ios_ad_unit_id: string | null;
   is_active: boolean;
+  max_impressions_per_period: number | null;
+  frequency_cap_period: FrequencyCapPeriod | null;
   created_at: string;
   updated_at: string;
 }
+
+const AD_PLACEMENT_COLUMNS =
+  "id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id, is_active, " +
+  "max_impressions_per_period, frequency_cap_period, created_at, updated_at";
 
 function toAdPlacement(row: AdPlacementRow): AdPlacement {
   return {
@@ -84,6 +128,8 @@ function toAdPlacement(row: AdPlacementRow): AdPlacement {
     androidAdUnitId: row.android_ad_unit_id,
     iosAdUnitId: row.ios_ad_unit_id,
     isActive: row.is_active,
+    maxImpressionsPerPeriod: row.max_impressions_per_period,
+    frequencyCapPeriod: row.frequency_cap_period,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -96,6 +142,8 @@ export interface CreateAdPlacementInput {
   androidAdUnitId?: string | null;
   iosAdUnitId?: string | null;
   isActive?: boolean;
+  maxImpressionsPerPeriod?: number | null;
+  frequencyCapPeriod?: FrequencyCapPeriod | null;
 }
 
 function handleWriteError(
@@ -110,6 +158,13 @@ function handleWriteError(
     throw new InvalidCountryError(countryId as number);
   }
   if (hasPgErrorCode(err, CHECK_VIOLATION)) {
+    const constraint = pgErrorConstraintName(err);
+    if (
+      constraint === "ad_placements_frequency_cap_together" ||
+      constraint === "ad_placements_frequency_cap_positive"
+    ) {
+      throw new InvalidFrequencyCapError();
+    }
     throw new AdPlacementMissingAdUnitError();
   }
   throw err;
@@ -119,10 +174,10 @@ export async function createAdPlacement(input: CreateAdPlacementInput): Promise<
   try {
     const result = await query<AdPlacementRow>(
       `INSERT INTO ad_placements
-         (placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id,
-                 is_active, created_at, updated_at`,
+         (placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id, is_active,
+          max_impressions_per_period, frequency_cap_period)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING ${AD_PLACEMENT_COLUMNS}`,
       [
         input.placementKey,
         input.countryId,
@@ -130,6 +185,8 @@ export async function createAdPlacement(input: CreateAdPlacementInput): Promise<
         input.androidAdUnitId ?? null,
         input.iosAdUnitId ?? null,
         input.isActive ?? false,
+        input.maxImpressionsPerPeriod ?? null,
+        input.frequencyCapPeriod ?? null,
       ],
     );
     return toAdPlacement(result.rows[0]);
@@ -144,6 +201,8 @@ export interface UpdateAdPlacementInput {
   androidAdUnitId?: string | null;
   iosAdUnitId?: string | null;
   isActive?: boolean;
+  maxImpressionsPerPeriod?: number | null;
+  frequencyCapPeriod?: FrequencyCapPeriod | null;
 }
 
 export async function updateAdPlacement(
@@ -160,17 +219,34 @@ export async function updateAdPlacement(
       input.androidAdUnitId !== undefined ? input.androidAdUnitId : existing.androidAdUnitId,
     iosAdUnitId: input.iosAdUnitId !== undefined ? input.iosAdUnitId : existing.iosAdUnitId,
     isActive: input.isActive ?? existing.isActive,
+    maxImpressionsPerPeriod:
+      input.maxImpressionsPerPeriod !== undefined
+        ? input.maxImpressionsPerPeriod
+        : existing.maxImpressionsPerPeriod,
+    frequencyCapPeriod:
+      input.frequencyCapPeriod !== undefined
+        ? input.frequencyCapPeriod
+        : existing.frequencyCapPeriod,
   };
 
   try {
     const result = await query<AdPlacementRow>(
       `UPDATE ad_placements
        SET country_id = $2, ad_format = $3, android_ad_unit_id = $4, ios_ad_unit_id = $5,
-           is_active = $6, updated_at = now()
+           is_active = $6, max_impressions_per_period = $7, frequency_cap_period = $8,
+           updated_at = now()
        WHERE id = $1
-       RETURNING id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id,
-                 is_active, created_at, updated_at`,
-      [id, next.countryId, next.adFormat, next.androidAdUnitId, next.iosAdUnitId, next.isActive],
+       RETURNING ${AD_PLACEMENT_COLUMNS}`,
+      [
+        id,
+        next.countryId,
+        next.adFormat,
+        next.androidAdUnitId,
+        next.iosAdUnitId,
+        next.isActive,
+        next.maxImpressionsPerPeriod,
+        next.frequencyCapPeriod,
+      ],
     );
     return result.rows[0] ? toAdPlacement(result.rows[0]) : null;
   } catch (err) {
@@ -184,9 +260,7 @@ export async function deleteAdPlacement(id: number): Promise<void> {
 
 export async function getAdPlacementById(id: number): Promise<AdPlacement | null> {
   const result = await query<AdPlacementRow>(
-    `SELECT id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id,
-            is_active, created_at, updated_at
-     FROM ad_placements WHERE id = $1`,
+    `SELECT ${AD_PLACEMENT_COLUMNS} FROM ad_placements WHERE id = $1`,
     [id],
   );
   return result.rows[0] ? toAdPlacement(result.rows[0]) : null;
@@ -217,8 +291,7 @@ export async function listAdPlacements(
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const result = await query<AdPlacementRow>(
-    `SELECT id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id,
-            is_active, created_at, updated_at
+    `SELECT ${AD_PLACEMENT_COLUMNS}
      FROM ad_placements
      ${whereClause}
      ORDER BY placement_key ASC, country_id ASC NULLS FIRST`,
@@ -240,9 +313,7 @@ export async function listAdPlacements(
 // and a country-specific row registered.
 export async function getActiveAdPlacementsForCountry(countryId: number): Promise<AdPlacement[]> {
   const result = await query<AdPlacementRow>(
-    `SELECT DISTINCT ON (placement_key)
-            id, placement_key, country_id, ad_format, android_ad_unit_id, ios_ad_unit_id,
-            is_active, created_at, updated_at
+    `SELECT DISTINCT ON (placement_key) ${AD_PLACEMENT_COLUMNS}
      FROM ad_placements
      WHERE is_active = true AND (country_id = $1 OR country_id IS NULL)
      ORDER BY placement_key ASC, country_id ASC NULLS LAST`,

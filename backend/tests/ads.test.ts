@@ -504,3 +504,340 @@ describe("GET /v1/ads/config (Step 56, public client-facing resolution)", () => 
     await app.close();
   });
 });
+
+describe("Ad placements - frequency cap (Step 57)", () => {
+  it("rejects maxImpressionsPerPeriod set without frequencyCapPeriod, and vice versa, on create", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "freq-cap-mismatch-create");
+
+    const onlyMax = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("freq-cap-only-max"),
+      adFormat: "banner",
+      maxImpressionsPerPeriod: 3,
+    });
+    expect(onlyMax.statusCode).toBe(400);
+
+    const onlyPeriod = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("freq-cap-only-period"),
+      adFormat: "banner",
+      frequencyCapPeriod: "day",
+    });
+    expect(onlyPeriod.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("creates a placement with a real frequency cap when both fields are set together", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "freq-cap-create");
+
+    const response = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("freq-cap-create"),
+      adFormat: "banner",
+      maxImpressionsPerPeriod: 3,
+      frequencyCapPeriod: "day",
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().placement).toMatchObject({
+      maxImpressionsPerPeriod: 3,
+      frequencyCapPeriod: "day",
+    });
+
+    await app.close();
+  });
+
+  it("rejects an update that would leave the pair mismatched, considering both existing and incoming values", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "freq-cap-update-mismatch");
+
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("freq-cap-update-mismatch"),
+      adFormat: "banner",
+      maxImpressionsPerPeriod: 5,
+      frequencyCapPeriod: "session",
+    });
+    const id = created.json().placement!.id;
+
+    // Trying to clear only one side of an already-set pair.
+    const clearOnlyMax = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/ads/placements/${id}`,
+      payload: { maxImpressionsPerPeriod: null },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(clearOnlyMax.statusCode).toBe(400);
+
+    // Clearing both together is fine.
+    const clearBoth = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/ads/placements/${id}`,
+      payload: { maxImpressionsPerPeriod: null, frequencyCapPeriod: null },
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(clearBoth.statusCode).toBe(200);
+    expect(clearBoth.json().placement).toMatchObject({
+      maxImpressionsPerPeriod: null,
+      frequencyCapPeriod: null,
+    });
+
+    await app.close();
+  });
+
+  it("rejects a maxImpressionsPerPeriod beyond the documented bound", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "freq-cap-bound");
+
+    const response = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("freq-cap-bound"),
+      adFormat: "banner",
+      maxImpressionsPerPeriod: 1001,
+      frequencyCapPeriod: "day",
+    });
+    expect(response.statusCode).toBe(400);
+
+    await app.close();
+  });
+});
+
+describe("POST /v1/ads/events (Step 57, public first-party reporting)", () => {
+  it("requires no authentication and records an impression", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "event-record");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("event-record"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId, eventType: "impression" },
+    });
+    expect(response.statusCode).toBe(204);
+
+    await app.close();
+  });
+
+  it("records a click, and accepts an optional countryId", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "event-click");
+    const [countryId] = await getIsolatedCountryIds(app, 1);
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("event-click"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId, eventType: "click", countryId },
+    });
+    expect(response.statusCode).toBe(204);
+
+    await app.close();
+  });
+
+  it("rejects an unknown placementId with 400", async () => {
+    const app = buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId: 999999999, eventType: "impression" },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an invalid eventType with 400", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "event-invalid-type");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("event-invalid-type"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId, eventType: "view" },
+    });
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rate-limits to 60/min", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "event-rate-limit");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("event-rate-limit"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    const responses = [];
+    for (let i = 0; i < 61; i++) {
+      responses.push(
+        await app.inject({
+          method: "POST",
+          url: "/v1/ads/events",
+          payload: { placementId, eventType: "impression" },
+        }),
+      );
+    }
+    const statusCodes = responses.map((r) => r.statusCode);
+    expect(statusCodes.slice(0, 60).every((code) => code === 204)).toBe(true);
+    expect(statusCodes[60]).toBe(429);
+
+    await app.close();
+  });
+});
+
+describe("GET /v1/admin/ads/reports (Step 57)", () => {
+  it("requires authentication and admin role", async () => {
+    const app = buildApp();
+    const regularToken = await createRegularToken(app, "report-auth");
+
+    const unauthenticated = await app.inject({ method: "GET", url: "/v1/admin/ads/reports" });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const nonAdmin = await app.inject({
+      method: "GET",
+      url: "/v1/admin/ads/reports",
+      headers: { authorization: `Bearer ${regularToken}` },
+    });
+    expect(nonAdmin.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("reports real recorded counts, and a real zero for a placement with no events", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "report-counts");
+    const withEvents = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("report-with-events"),
+      adFormat: "banner",
+    });
+    const withEventsId = withEvents.json().placement!.id;
+    const withoutEvents = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("report-without-events"),
+      adFormat: "banner",
+    });
+    const withoutEventsId = withoutEvents.json().placement!.id;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId: withEventsId, eventType: "impression" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId: withEventsId, eventType: "impression" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId: withEventsId, eventType: "click" },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/admin/ads/reports",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const report = response.json().report as Array<{
+      placementId: number;
+      impressions: number;
+      clicks: number;
+    }>;
+    const withEventsRow = report.find((r) => r.placementId === withEventsId);
+    const withoutEventsRow = report.find((r) => r.placementId === withoutEventsId);
+    expect(withEventsRow).toMatchObject({ impressions: 2, clicks: 1 });
+    // The zero-event placement still appears, with real 0s, not omitted.
+    expect(withoutEventsRow).toMatchObject({ impressions: 0, clicks: 0 });
+
+    await app.close();
+  });
+
+  it("filters by countryId without ever hiding a placement that simply has no matching events", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "report-country-filter");
+    const [countryA, countryB] = await getIsolatedCountryIds(app, 2);
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("report-country-filter"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId, eventType: "impression", countryId: countryA },
+    });
+
+    const filteredToA = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/reports?countryId=${countryA}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const rowInA = filteredToA
+      .json()
+      .report.find((r: { placementId: number }) => r.placementId === placementId);
+    expect(rowInA).toMatchObject({ impressions: 1 });
+
+    // The placement still appears when filtered to a country it has no
+    // events for - with a real 0, not hidden entirely.
+    const filteredToB = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/reports?countryId=${countryB}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const rowInB = filteredToB
+      .json()
+      .report.find((r: { placementId: number }) => r.placementId === placementId);
+    expect(rowInB).toMatchObject({ impressions: 0 });
+
+    await app.close();
+  });
+
+  it("filters by date range", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "report-date-filter");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("report-date-filter"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/ads/events",
+      payload: { placementId, eventType: "impression" },
+    });
+
+    const futureWindow = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/reports?startsAfter=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const rowInFuture = futureWindow
+      .json()
+      .report.find((r: { placementId: number }) => r.placementId === placementId);
+    expect(rowInFuture).toMatchObject({ impressions: 0 });
+
+    const pastWindow = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/reports?startsAfter=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    const rowInPast = pastWindow
+      .json()
+      .report.find((r: { placementId: number }) => r.placementId === placementId);
+    expect(rowInPast).toMatchObject({ impressions: 1 });
+
+    await app.close();
+  });
+});

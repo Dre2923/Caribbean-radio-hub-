@@ -3,7 +3,8 @@
 // from schemas/common.ts.
 
 import { idSchema, nullableIdSchema } from "./common.js";
-import { AD_FORMATS } from "../repositories/adPlacementsRepository.js";
+import { AD_FORMATS, FREQUENCY_CAP_PERIODS } from "../repositories/adPlacementsRepository.js";
+import { AD_EVENT_TYPES } from "../repositories/adEventsRepository.js";
 
 // A generous, deliberately-bounded length for a client-supplied ad unit
 // id - real AdMob ad unit ids are short, fixed-shape strings
@@ -22,6 +23,28 @@ const AD_UNIT_ID_SCHEMA = {
   maxLength: MAX_AD_UNIT_ID_LENGTH,
 } as const;
 
+// Step 57: a real, enforced upper bound on a frequency cap value - not
+// idSchema's int4 ceiling (this isn't a foreign-key id, but it is still
+// stored in a Postgres `integer` column, so the exact unbounded-integer
+// hazard Step 55 fixed elsewhere would reappear here without one), and
+// deliberately much lower: no legitimate placement caps itself at more
+// than a few dozen shows a day, so a generous-but-real domain bound
+// (matching MAX_PUSH_TOKENS_PER_USER/MAX_TAG_IDS's own "generous, not
+// unlimited" shape) catches a nonsensical value long before it would ever
+// need Postgres's own range to reject it.
+export const MAX_IMPRESSIONS_PER_PERIOD = 1000;
+
+const MAX_IMPRESSIONS_PER_PERIOD_SCHEMA = {
+  type: ["integer", "null"],
+  minimum: 1,
+  maximum: MAX_IMPRESSIONS_PER_PERIOD,
+} as const;
+
+const FREQUENCY_CAP_PERIOD_SCHEMA = {
+  type: ["string", "null"],
+  enum: [...FREQUENCY_CAP_PERIODS, null],
+} as const;
+
 export const adPlacementSchema = {
   type: "object",
   properties: {
@@ -34,6 +57,10 @@ export const adPlacementSchema = {
     androidAdUnitId: { type: ["string", "null"] },
     iosAdUnitId: { type: ["string", "null"] },
     isActive: { type: "boolean" },
+    // Step 57: null together means no cap configured - see
+    // adPlacementsRepository.ts's own AdPlacement interface comment.
+    maxImpressionsPerPeriod: { type: ["integer", "null"] },
+    frequencyCapPeriod: { type: ["string", "null"], enum: [...FREQUENCY_CAP_PERIODS, null] },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
@@ -45,6 +72,8 @@ export const adPlacementSchema = {
     "androidAdUnitId",
     "iosAdUnitId",
     "isActive",
+    "maxImpressionsPerPeriod",
+    "frequencyCapPeriod",
     "createdAt",
     "updatedAt",
   ],
@@ -61,6 +90,8 @@ export const createAdPlacementBodySchema = {
     androidAdUnitId: AD_UNIT_ID_SCHEMA,
     iosAdUnitId: AD_UNIT_ID_SCHEMA,
     isActive: { type: "boolean" },
+    maxImpressionsPerPeriod: MAX_IMPRESSIONS_PER_PERIOD_SCHEMA,
+    frequencyCapPeriod: FREQUENCY_CAP_PERIOD_SCHEMA,
   },
 } as const;
 
@@ -74,6 +105,8 @@ export const updateAdPlacementBodySchema = {
     androidAdUnitId: AD_UNIT_ID_SCHEMA,
     iosAdUnitId: AD_UNIT_ID_SCHEMA,
     isActive: { type: "boolean" },
+    maxImpressionsPerPeriod: MAX_IMPRESSIONS_PER_PERIOD_SCHEMA,
+    frequencyCapPeriod: FREQUENCY_CAP_PERIOD_SCHEMA,
   },
 } as const;
 
@@ -92,5 +125,44 @@ export const adsConfigQuerySchema = {
   required: ["countryId"],
   properties: {
     countryId: idSchema,
+  },
+} as const;
+
+// Step 57: first-party placement-level reporting.
+
+export const createAdEventBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["placementId", "eventType"],
+  properties: {
+    placementId: idSchema,
+    eventType: { type: "string", enum: [...AD_EVENT_TYPES] },
+    // Optional, unlike GET /v1/ads/config's own required countryId - many
+    // real callers (a client that already resolved config once and cached
+    // it) may not have a country in scope by the time an event fires, and
+    // an event with no country is still meaningful (it just won't appear
+    // in a country-filtered report).
+    countryId: idSchema,
+  },
+} as const;
+
+export const adPlacementReportRowSchema = {
+  type: "object",
+  properties: {
+    placementId: { type: "integer" },
+    placementKey: { type: "string" },
+    impressions: { type: "integer" },
+    clicks: { type: "integer" },
+  },
+  required: ["placementId", "placementKey", "impressions", "clicks"],
+} as const;
+
+export const adPlacementReportQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    countryId: idSchema,
+    startsAfter: { type: "string", format: "date-time" },
+    startsBefore: { type: "string", format: "date-time" },
   },
 } as const;

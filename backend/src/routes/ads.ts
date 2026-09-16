@@ -9,8 +9,16 @@ import {
   DuplicateAdPlacementError,
   InvalidCountryError,
   AdPlacementMissingAdUnitError,
+  InvalidFrequencyCapError,
   type AdFormat,
+  type FrequencyCapPeriod,
 } from "../repositories/adPlacementsRepository.js";
+import {
+  recordAdEvent,
+  getAdPlacementReport,
+  InvalidAdPlacementError,
+  type AdEventType,
+} from "../repositories/adEventsRepository.js";
 import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import {
   adPlacementSchema,
@@ -18,6 +26,9 @@ import {
   updateAdPlacementBodySchema,
   listAdPlacementsQuerySchema,
   adsConfigQuerySchema,
+  createAdEventBodySchema,
+  adPlacementReportRowSchema,
+  adPlacementReportQuerySchema,
 } from "../schemas/ads.js";
 
 function badRequest(reply: FastifyReply, message: string) {
@@ -38,6 +49,16 @@ function hasAnyAdUnitId(androidAdUnitId: string | null, iosAdUnitId: string | nu
   return androidAdUnitId !== null || iosAdUnitId !== null;
 }
 
+// Step 57: the identical "validated here first, backstopped by the DB's
+// own ad_placements_frequency_cap_together CHECK constraint" posture as
+// hasAnyAdUnitId above.
+function hasValidFrequencyCapPair(
+  maxImpressionsPerPeriod: number | null,
+  frequencyCapPeriod: FrequencyCapPeriod | null,
+): boolean {
+  return (maxImpressionsPerPeriod === null) === (frequencyCapPeriod === null);
+}
+
 interface CreateAdPlacementBody {
   placementKey: string;
   countryId?: number | null;
@@ -45,6 +66,8 @@ interface CreateAdPlacementBody {
   androidAdUnitId?: string | null;
   iosAdUnitId?: string | null;
   isActive?: boolean;
+  maxImpressionsPerPeriod?: number | null;
+  frequencyCapPeriod?: FrequencyCapPeriod | null;
 }
 
 interface UpdateAdPlacementBody {
@@ -53,6 +76,8 @@ interface UpdateAdPlacementBody {
   androidAdUnitId?: string | null;
   iosAdUnitId?: string | null;
   isActive?: boolean;
+  maxImpressionsPerPeriod?: number | null;
+  frequencyCapPeriod?: FrequencyCapPeriod | null;
 }
 
 interface ListAdPlacementsQuery {
@@ -62,6 +87,18 @@ interface ListAdPlacementsQuery {
 
 interface AdsConfigQuery {
   countryId: number;
+}
+
+interface CreateAdEventBody {
+  placementId: number;
+  eventType: AdEventType;
+  countryId?: number;
+}
+
+interface AdPlacementReportQuery {
+  countryId?: number;
+  startsAfter?: string;
+  startsBefore?: string;
 }
 
 export async function adsRoutes(app: FastifyInstance): Promise<void> {
@@ -77,7 +114,10 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
           "prefers a country-specific active placement over the global one for the " +
           "same placementKey (GET /v1/ads/config). isActive defaults to false (a " +
           "placement can be staged with its ad unit ids added later); activating it " +
-          "requires at least one of androidAdUnitId/iosAdUnitId to already be set.",
+          "requires at least one of androidAdUnitId/iosAdUnitId to already be set. " +
+          "maxImpressionsPerPeriod/frequencyCapPeriod configure an optional frequency " +
+          "cap rule (both or neither) - this backend hands the rule to the client via " +
+          "GET /v1/ads/config, but never counts or enforces it itself.",
         tags: ["ads"],
         security: [{ bearerAuth: [] }],
         body: createAdPlacementBodySchema,
@@ -95,14 +135,30 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request: FastifyRequest<{ Body: CreateAdPlacementBody }>, reply: FastifyReply) => {
-      const { placementKey, countryId, adFormat, androidAdUnitId, iosAdUnitId, isActive } =
-        request.body;
+      const {
+        placementKey,
+        countryId,
+        adFormat,
+        androidAdUnitId,
+        iosAdUnitId,
+        isActive,
+        maxImpressionsPerPeriod,
+        frequencyCapPeriod,
+      } = request.body;
       const resolvedAndroidAdUnitId = androidAdUnitId ?? null;
       const resolvedIosAdUnitId = iosAdUnitId ?? null;
+      const resolvedMaxImpressionsPerPeriod = maxImpressionsPerPeriod ?? null;
+      const resolvedFrequencyCapPeriod = frequencyCapPeriod ?? null;
       if (isActive && !hasAnyAdUnitId(resolvedAndroidAdUnitId, resolvedIosAdUnitId)) {
         return badRequest(
           reply,
           "An active placement needs at least one of androidAdUnitId/iosAdUnitId set",
+        );
+      }
+      if (!hasValidFrequencyCapPair(resolvedMaxImpressionsPerPeriod, resolvedFrequencyCapPeriod)) {
+        return badRequest(
+          reply,
+          "maxImpressionsPerPeriod and frequencyCapPeriod must be set together, or not at all",
         );
       }
       try {
@@ -113,6 +169,8 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
           androidAdUnitId: resolvedAndroidAdUnitId,
           iosAdUnitId: resolvedIosAdUnitId,
           isActive,
+          maxImpressionsPerPeriod: resolvedMaxImpressionsPerPeriod,
+          frequencyCapPeriod: resolvedFrequencyCapPeriod,
         });
         return reply.status(201).send({ placement });
       } catch (err) {
@@ -122,7 +180,7 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof InvalidCountryError) {
           return badRequest(reply, "countryId does not match a known country");
         }
-        if (err instanceof AdPlacementMissingAdUnitError) {
+        if (err instanceof AdPlacementMissingAdUnitError || err instanceof InvalidFrequencyCapError) {
           return badRequest(reply, err.message);
         }
         throw err;
@@ -201,7 +259,9 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
           "Updates an ad placement. Requires an admin account. All fields optional " +
           "(at least one required); only the fields present are changed. Setting " +
           "isActive: true requires at least one of androidAdUnitId/iosAdUnitId to be " +
-          "set (either already, or in this same request).",
+          "set (either already, or in this same request). maxImpressionsPerPeriod/ " +
+          "frequencyCapPeriod, if either is present, must resolve to both set or both " +
+          "null (either already, or in this same request).",
         tags: ["ads"],
         security: [{ bearerAuth: [] }],
         params: {
@@ -231,7 +291,15 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
       const existing = await getAdPlacementById(request.params.id);
       if (!existing) return placementNotFound(reply);
 
-      const { countryId, adFormat, androidAdUnitId, iosAdUnitId, isActive } = request.body;
+      const {
+        countryId,
+        adFormat,
+        androidAdUnitId,
+        iosAdUnitId,
+        isActive,
+        maxImpressionsPerPeriod,
+        frequencyCapPeriod,
+      } = request.body;
       const nextAndroidAdUnitId =
         androidAdUnitId !== undefined ? androidAdUnitId : existing.androidAdUnitId;
       const nextIosAdUnitId = iosAdUnitId !== undefined ? iosAdUnitId : existing.iosAdUnitId;
@@ -242,6 +310,18 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
           "An active placement needs at least one of androidAdUnitId/iosAdUnitId set",
         );
       }
+      const nextMaxImpressionsPerPeriod =
+        maxImpressionsPerPeriod !== undefined
+          ? maxImpressionsPerPeriod
+          : existing.maxImpressionsPerPeriod;
+      const nextFrequencyCapPeriod =
+        frequencyCapPeriod !== undefined ? frequencyCapPeriod : existing.frequencyCapPeriod;
+      if (!hasValidFrequencyCapPair(nextMaxImpressionsPerPeriod, nextFrequencyCapPeriod)) {
+        return badRequest(
+          reply,
+          "maxImpressionsPerPeriod and frequencyCapPeriod must be set together, or not at all",
+        );
+      }
 
       try {
         const placement = await updateAdPlacement(request.params.id, {
@@ -250,6 +330,8 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
           androidAdUnitId,
           iosAdUnitId,
           isActive,
+          maxImpressionsPerPeriod,
+          frequencyCapPeriod,
         });
         if (!placement) return placementNotFound(reply);
         return { placement };
@@ -260,7 +342,7 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof InvalidCountryError) {
           return badRequest(reply, "countryId does not match a known country");
         }
-        if (err instanceof AdPlacementMissingAdUnitError) {
+        if (err instanceof AdPlacementMissingAdUnitError || err instanceof InvalidFrequencyCapError) {
           return badRequest(reply, err.message);
         }
         throw err;
@@ -324,6 +406,88 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
     async (request: FastifyRequest<{ Querystring: AdsConfigQuery }>) => {
       const placements = await getActiveAdPlacementsForCountry(request.query.countryId);
       return { placements };
+    },
+  );
+
+  app.post<{ Body: CreateAdEventBody }>(
+    "/ads/events",
+    {
+      // Public, unauthenticated - most of this app's ad-eligible screens
+      // require no login at all (see migration 1700000025000_ad_events's
+      // own comment), so most impressions/clicks this records come from
+      // anonymous listeners. A dedicated rate limit, the same per-route
+      // override mechanism POST /v1/events (Step 58, OWASP API6) already
+      // uses, bounds how fast a script could flood this table with fake
+      // events - looser than a moderation-queue endpoint since real ad
+      // traffic (a listener scrolling a banner-heavy list) can legitimately
+      // fire several of these in quick succession.
+      config: {
+        rateLimit: {
+          max: 60,
+          timeWindow: "1 minute",
+        },
+      },
+      schema: {
+        description:
+          "Records a first-party impression or click for an ad placement, after the " +
+          "client's own mediation SDK has already shown the ad or registered the " +
+          "click - this is a report of something that already happened, not a request " +
+          "to serve or approve anything. countryId is optional but recommended (it's " +
+          "what makes GET /v1/admin/ads/reports's own breakdown Caribbean-specific). " +
+          "Rate-limited to 60/min.",
+        tags: ["ads"],
+        body: createAdEventBodySchema,
+        response: {
+          204: { type: "null", description: "Event recorded." },
+          400: errorResponseSchema,
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Body: CreateAdEventBody }>, reply: FastifyReply) => {
+      const { placementId, eventType, countryId } = request.body;
+      try {
+        await recordAdEvent({ placementId, eventType, countryId: countryId ?? null });
+        return reply.status(204).send();
+      } catch (err) {
+        if (err instanceof InvalidAdPlacementError) {
+          return badRequest(reply, "placementId does not match a known ad placement");
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.get<{ Querystring: AdPlacementReportQuery }>(
+    "/admin/ads/reports",
+    {
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description:
+          "First-party placement-level reporting - impression/click counts per " +
+          "placement, from this backend's own recorded events (never the mediation " +
+          "SDK's own numbers, which this backend has no access to). Requires an admin " +
+          "account. Every currently-existing placement appears, with real 0 counts " +
+          "(not omitted) when it has no matching events in the filtered window. " +
+          "Optional countryId/startsAfter/startsBefore filters narrow which recorded " +
+          "events count, without ever hiding a placement that simply had none.",
+        tags: ["ads"],
+        security: [{ bearerAuth: [] }],
+        querystring: adPlacementReportQuerySchema,
+        response: {
+          200: {
+            type: "object",
+            properties: { report: { type: "array", items: adPlacementReportRowSchema } },
+            required: ["report"],
+          },
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: AdPlacementReportQuery }>) => {
+      const { countryId, startsAfter, startsBefore } = request.query;
+      const report = await getAdPlacementReport({ countryId, startsAfter, startsBefore });
+      return { report };
     },
   );
 }
