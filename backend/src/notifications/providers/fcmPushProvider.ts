@@ -30,6 +30,25 @@ const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const ASSERTION_LIFETIME_SECONDS = 3600;
 const TOKEN_REFRESH_MARGIN_MS = 60_000;
 
+// Step 58/OWASP API10 (Unsafe Consumption of Third-Party APIs): neither
+// outbound call this provider makes carried any timeout until now - a
+// hung or slow-to-respond Google endpoint (oauth2.googleapis.com or
+// fcm.googleapis.com) would otherwise stall this call indefinitely, which
+// in turn stalls favoriteStationAvailabilityNotifier's Promise.all fan-out
+// for that one token, which in turn stalls the admin's synchronous
+// `await`ed PATCH /v1/stations/:id request (Step 54's wiring) for as long
+// as Google's own connection stays open. AbortSignal.timeout() is a Node
+// core API confirmed (via research, not assumed) to have been added in
+// v17.3.0/v16.14.0, well within this project's `engines` >=20 floor - the
+// same "verify the exact Node version an API needs before relying on it"
+// discipline already applied to checkStreamHealth's own timeout handling.
+// 10s is more generous than checkStreamHealth's 8s default since these are
+// small JSON request/response round trips to a well-provisioned Google
+// endpoint, not a real-world radio stream server of unknown quality - long
+// enough to absorb ordinary network jitter, short enough that one slow
+// token can never meaningfully delay the fan-out or the request awaiting it.
+const FCM_FETCH_TIMEOUT_MS = 10_000;
+
 function base64url(input: string | Buffer): string {
   return Buffer.from(input).toString("base64url");
 }
@@ -97,6 +116,12 @@ export class FcmPushProvider implements PushProvider {
   constructor(
     private readonly config: FcmEnvConfig,
     private readonly fetchImpl: FetchLike = fetch,
+    // Injectable for the identical reason checkStreamHealth's own
+    // timeoutMs parameter is: production always uses the real
+    // FCM_FETCH_TIMEOUT_MS default, but a test proving the timeout
+    // actually aborts a hung call needs a much smaller value than 10s to
+    // run at unit-test speed.
+    private readonly timeoutMs: number = FCM_FETCH_TIMEOUT_MS,
   ) {}
 
   private async getAccessToken(): Promise<string> {
@@ -110,6 +135,7 @@ export class FcmPushProvider implements PushProvider {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: JWT_BEARER_GRANT_TYPE, assertion }).toString(),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
       throw new FcmAuthError(`${response.status} ${await response.text()}`);
@@ -139,6 +165,7 @@ export class FcmPushProvider implements PushProvider {
             data: message.data,
           },
         }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       },
     );
     if (!response.ok) {

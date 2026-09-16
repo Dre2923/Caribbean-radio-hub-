@@ -1619,3 +1619,35 @@ describe("Event location and proximity search (Step 30)", () => {
     await app.close();
   });
 });
+
+describe("POST /v1/events rate limiting (Step 58, OWASP API6)", () => {
+  it("rate-limits submissions to 10/min - a regular user's own submission queue is a moderation resource, not just database load", async () => {
+    const app = buildApp();
+    const countryId = await getIsolatedCountryId(app);
+    const token = await createRegularToken(app, "rate-limit");
+    const marker = `Rate Limit Event ${Date.now()}${Math.random().toString(36).slice(2)}`;
+
+    const responses = [];
+    for (let i = 0; i < 11; i++) {
+      // A distinct title/time per request - Step 28's duplicate-detection
+      // 409 must never be what this test observes instead of the rate
+      // limit itself.
+      responses.push(
+        await createEventViaApi(app, {
+          countryId,
+          token,
+          title: `${marker} ${i}`,
+          startsAt: futureIso(24 + i),
+        }),
+      );
+    }
+    const statusCodes = responses.map((r) => r.statusCode);
+    // The first 10 succeed; the 11th is the one this limit exists to
+    // catch - checking every code (not just the last) proves the limit
+    // doesn't kick in early.
+    expect(statusCodes.slice(0, 10).every((code) => code === 201)).toBe(true);
+    expect(statusCodes[10]).toBe(429);
+
+    await app.close();
+  });
+});

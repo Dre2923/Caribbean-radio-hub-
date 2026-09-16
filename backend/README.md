@@ -2191,6 +2191,54 @@ cap, and that un-registering a token frees a real slot for a new one.
 "can't demote the last admin") rather than `400`, since the request itself
 is perfectly well-formed.
 
+**API6:2023 — Unrestricted Access to Sensitive Business Flows.** `POST
+/v1/events` (Step 55) had only this API's own global rate limit (100/min)
+protecting it — no limit specific to that route. A regular user's own
+event-submission queue directly feeds the public events list (after
+moderation) and, before moderation, occupies a real, finite admin-review
+resource; OWASP's own API6 guidance treats a business flow that consumes a
+disproportionate downstream resource per request (here: a human
+moderator's attention, not just database load) as needing its own
+tighter limit, distinct from generic anti-abuse rate limiting. Added a
+dedicated `rateLimit: { max: 10, timeWindow: "1 minute" }` directly on the
+route's own `config`, the same per-route override mechanism already used
+for `POST /v1/users` (5/min, since it hashes a password and writes to the
+DB on every call) — verified directly that an 11th submission within a
+minute from the same account is rejected with `429` while the first 10
+succeed with `201`, and that this is scoped per-account (the existing
+JWT-based rate-limit key), not global.
+
+**API10:2023 — Unsafe Consumption of Third-Party APIs.**
+`FcmPushProvider` (`src/notifications/providers/fcmPushProvider.ts`, Step
+53) makes two outbound calls to Google's own infrastructure — an OAuth2
+token exchange against `oauth2.googleapis.com` and the actual push send
+against `fcm.googleapis.com` — and neither carried any timeout at all.
+OWASP's own API10 guidance calls out exactly this shape (trusting a
+third-party API to always respond promptly, with no bound of your own) as
+a risk: a hung or merely slow-to-respond Google endpoint would stall that
+one call indefinitely, which in turn stalls
+`favoriteStationAvailabilityNotifier`'s `Promise.all` fan-out for that one
+device token, which in turn stalls the admin's own synchronously-`await`ed
+`PATCH /v1/stations/:id` request (Step 54's wiring) for as long as
+Google's connection stayed open — an availability risk this backend has no
+control over once it hands control to an unbounded third-party call.
+Added a `FCM_FETCH_TIMEOUT_MS` (10s) bound to both calls via
+`AbortSignal.timeout()` — a Node core API confirmed via research (not
+assumed from memory) to have been added in Node v16.14.0/v17.3.0, well
+within this project's own `engines >=20` floor, and the identical
+timeout-bounding discipline `checkStreamHealth` (API7 above) already
+applies to its own outbound call. 10s is more generous than
+`checkStreamHealth`'s 8s default since these are small JSON request/
+response round trips to a well-provisioned Google endpoint, not a
+real-world radio stream server of unknown quality. The timeout itself is
+injectable via a third, defaulted constructor parameter — production
+always uses the real 10s default, but `tests/pushNotifications.test.ts`'s
+new timeout-protection suite passes a 20ms value against a deliberately
+hung mock `fetchImpl` (one that never resolves on its own but does honor
+the `AbortSignal` it's given, the same real contract Node's own
+fetch/undici implementation has) so the test proving the abort actually
+fires runs in milliseconds, not the real 10 seconds.
+
 **API8:2023 — Security Misconfiguration (CORS, investigated).** Checked
 whether the complete absence of any CORS configuration on this API was a
 gap, given the Admin Dashboard (Steps 31-33) is a real browser client on
@@ -2207,27 +2255,31 @@ than fixed a real gap, so none was added — recorded here as a genuine,
 verified audit outcome, the same "no bug found is still a real result"
 standard already applied elsewhere in this build.
 
-Verified: clean build and lint; the full 390-test suite (19 new, split
+Verified: clean build and lint; the full 394-test suite (23 new, split
 between `tests/ssrfProtection.test.ts`'s direct unit tests,
 `tests/streamHealthCheck.test.ts`'s new SSRF-integration describe block,
-and `tests/pushTokens.test.ts`'s new cap describe block) passing three
-consecutive runs; `npm audit` clean; `gitleaks` clean against the real
-repository; proven to actually catch two real bugs by temporarily (a)
-removing the `169.254.0.0/16` metadata-endpoint subnet rule from
-`ssrfProtection.ts` and watching both the direct unit test and the
-`checkStreamHealth`-level integration test fail with the exact wrong
-(allowed-through) result, and (b) disabling the cap check in
-`registerPushToken` and watching the exact cap test fail with `204`
-instead of `409`, in both cases restoring immediately and confirming a
-byte-identical diff against the pre-bug backup; and a live-server run
-against a running compiled server — a real admin-created station pointed
-at the cloud metadata endpoint and, separately, at a loopback address both
-correctly recorded as unreachable via the manual health-check endpoint
-with the SSRF error message and zero connection latency (proving no
-connection was ever attempted), and a real account registering exactly 20
-push tokens successfully, a 21st correctly rejected with `409`, and a
-re-registration of the very first token still succeeding at the cap — all
-live test data deleted afterward.
+`tests/pushTokens.test.ts`'s new cap describe block, `tests/events.test.ts`'s
+new rate-limit describe block, and `tests/pushNotifications.test.ts`'s new
+timeout-protection describe block) passing three consecutive runs; `npm
+audit` clean; `gitleaks` clean against the real repository; proven to
+actually catch real bugs by temporarily (a) removing the `169.254.0.0/16`
+metadata-endpoint subnet rule from `ssrfProtection.ts` and watching both
+the direct unit test and the `checkStreamHealth`-level integration test
+fail with the exact wrong (allowed-through) result, (b) disabling the cap
+check in `registerPushToken` and watching the exact cap test fail with
+`204` instead of `409`, and (c) removing the `AbortSignal.timeout()`
+wiring from both of `FcmPushProvider`'s outbound calls and watching both
+hung-call timeout tests genuinely hang and fail on vitest's own 5s test
+timeout (rather than the intended 20ms), in every case restoring
+immediately and confirming a byte-identical diff against the pre-bug
+backup; and a live-server run against a running compiled server — a real
+admin-created station pointed at the cloud metadata endpoint and,
+separately, at a loopback address both correctly recorded as unreachable
+via the manual health-check endpoint with the SSRF error message and zero
+connection latency (proving no connection was ever attempted), and a real
+account registering exactly 20 push tokens successfully, a 21st correctly
+rejected with `409`, and a re-registration of the very first token still
+succeeding at the cap — all live test data deleted afterward.
 
 ## Security baseline
 

@@ -561,6 +561,21 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
       // how the resulting status is derived server-side from the
       // submitter's role.
       preHandler: [app.authenticate],
+      // Step 58/OWASP API6 (Unrestricted Access to Sensitive Business
+      // Flows): a regular user's submission lands in a human's moderation
+      // queue (Step 24) - unlike most writes in this API, the cost of
+      // abuse here isn't just database load, it's wasted admin review
+      // time and a queue an admin can no longer trust at a glance. The
+      // global 100/min limit alone would let one script flood that queue.
+      // Looser than registration's 5/min (a real event organizer
+      // legitimately submits more than one event per session) but a real,
+      // dedicated bound rather than relying on the global limit alone.
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: "1 minute",
+        },
+      },
       preValidation: (request, reply, done) => {
         trimEventBodyStrings(request.body as Partial<TrimmableEventFields> | undefined);
         done();
@@ -571,8 +586,8 @@ export async function eventsRoutes(app: FastifyInstance): Promise<void> {
           "A regular user's submission starts pending and is hidden from the public " +
           "listing until an admin approves it via PATCH; an admin's own submission is " +
           "approved immediately. Optional categoryIds attaches it to existing event " +
-          "categories (GET /v1/event-categories). `409` if an event with the same " +
-          "title already exists for this country and start time.",
+          "categories (GET /v1/event-categories). Rate-limited to 10/min. `409` if an " +
+          "event with the same title already exists for this country and start time.",
         tags: ["events"],
         security: [{ bearerAuth: [] }],
         body: createEventBodySchema,

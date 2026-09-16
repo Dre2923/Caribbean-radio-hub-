@@ -209,4 +209,58 @@ describe("FcmPushProvider", () => {
     const provider = new FcmPushProvider(testConfig, fetchMock);
     await expect(provider.send({ token: "t", title: "A", body: "B" })).rejects.toThrow(FcmAuthError);
   });
+
+  describe("timeout protection (Step 58, OWASP API10)", () => {
+    // A realistic stand-in for a hung Google endpoint: fetchImpl never
+    // resolves or rejects on its own, but does honor the AbortSignal it's
+    // given, the same contract Node's real fetch/undici implementation
+    // has - so this only passes if FcmPushProvider is actually wiring the
+    // signal through to fetchImpl, not merely constructing one and
+    // discarding it.
+    function hungFetchThatHonorsAbort(): FetchLike {
+      return (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(init.signal!.reason);
+          });
+        });
+    }
+
+    it("aborts a hung OAuth token exchange instead of hanging forever", async () => {
+      const provider = new FcmPushProvider(testConfig, hungFetchThatHonorsAbort(), 20);
+      await expect(
+        provider.send({ token: "t", title: "A", body: "B" }),
+      ).rejects.toThrow();
+    });
+
+    it("aborts a hung FCM send call instead of hanging forever", async () => {
+      const fetchMock: FetchLike = async (url, init) => {
+        if (url === "https://oauth2.googleapis.com/token") {
+          return jsonResponse(200, { access_token: "tok", expires_in: 3600 });
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(init.signal!.reason);
+          });
+        });
+      };
+      const provider = new FcmPushProvider(testConfig, fetchMock, 20);
+      await expect(
+        provider.send({ token: "t", title: "A", body: "B" }),
+      ).rejects.toThrow();
+    });
+
+    it("does not abort a call that completes well within the timeout", async () => {
+      const fetchMock: FetchLike = async (url) => {
+        if (url === "https://oauth2.googleapis.com/token") {
+          return jsonResponse(200, { access_token: "tok", expires_in: 3600 });
+        }
+        return jsonResponse(200, { name: "projects/test-project/messages/1" });
+      };
+      const provider = new FcmPushProvider(testConfig, fetchMock, 5000);
+      await expect(
+        provider.send({ token: "t", title: "A", body: "B" }),
+      ).resolves.toBeUndefined();
+    });
+  });
 });
