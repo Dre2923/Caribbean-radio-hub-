@@ -33,6 +33,19 @@ export const idSchema = {
   maximum: POSTGRES_INTEGER_MAX,
 } as const;
 
+// The nullable variant, for a field where `null` itself is meaningful
+// (e.g. ad_placements.country_id's "no country override, this is the
+// global default" - schemas/ads.ts) rather than merely optional. Carries
+// the exact same bounds as idSchema for the non-null case - `minimum`/
+// `maximum` are simply not evaluated against a `null` instance under
+// JSON Schema's own semantics, so this never weakens the int4 bound
+// idSchema exists to enforce.
+export const nullableIdSchema = {
+  type: ["integer", "null"],
+  minimum: 1,
+  maximum: POSTGRES_INTEGER_MAX,
+} as const;
+
 export const errorResponseSchema = {
   type: "object",
   properties: {

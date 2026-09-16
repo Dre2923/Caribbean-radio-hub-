@@ -2198,6 +2198,76 @@ it, a genuine cross-cutting bug found and fixed along the way, and one
 plausible-looking fix correctly investigated and rejected rather than
 shipped on assumption.
 
+## Advertising
+
+### Ad placement configuration (Step 56)
+
+Per `docs/ARCHITECTURE_PLAN.md`'s own sourced research, real mobile ad
+monetization runs through a client-side mediation SDK (e.g. AdMob) that
+itself connects to multiple ad networks/SSPs and handles actually serving
+creative, tracking impressions/clicks, and payment — building a custom
+ad-serving/tracking backend from scratch would be reinventing what a real
+ad network already does, not a defensible engineering choice. This
+backend's scope is deliberately narrower and honest about it: ad
+**configuration** — which ad unit/placement ids are active, per country
+and screen — fully buildable and testable with zero ad network account.
+
+Added `ad_placements` (migration `1700000023000_ad_placements`):
+`placementKey` (a stable identifier the client's own code references
+directly, e.g. `station_list_banner`), a nullable `countryId` (`null` =
+the global default for that placement, a real value = a country-specific
+override), `adFormat` (a DB CHECK-constrained enum matching AdMob's own
+documented formats — `banner`/`interstitial`/`rewarded`/`native`), and
+separate `androidAdUnitId`/`iosAdUnitId` columns (AdMob issues a distinct
+ad unit id per platform even for what a human calls "the same placement",
+since Android and iOS apps are registered as separate AdMob "apps" in its
+own console).
+
+Two real database-level integrity guarantees, not just application code:
+
+- **NULL-uniqueness fix**: a plain `UNIQUE(placement_key, country_id)`
+  constraint would silently allow multiple "global default" rows for the
+  same `placementKey`, since Postgres treats every `NULL` as distinct
+  from every other `NULL` — a genuine, well-known Postgres gotcha, not a
+  hypothetical one. Closed with a partial unique index
+  (`ad_placements_global_key_unique ON ad_placements (placement_key)
+  WHERE country_id IS NULL`) alongside the plain constraint for the
+  non-null, per-country case.
+- **`ad_placements_active_requires_ad_unit_id`**: a CHECK constraint
+  (`(NOT is_active) OR android_ad_unit_id IS NOT NULL OR
+  ios_ad_unit_id IS NOT NULL`) backstopping the application-level
+  validation in `routes/ads.ts` — a placement can be staged with neither
+  ad unit id set while ids are still being requested from the ad
+  network, but can never actually be activated empty.
+
+Full admin API (`[app.authenticate, app.requireAdmin]`): `POST`/`GET`/
+`GET :id`/`PATCH`/`DELETE /v1/admin/ads/placements`, plus the real
+client-facing resolution endpoint, `GET /v1/ads/config?countryId=` —
+public, unauthenticated, returning one entry per active `placementKey`
+visible to that country, preferring a country-specific override over the
+global default when both exist. That preference is implemented with
+`DISTINCT ON (placement_key) ... ORDER BY placement_key, country_id ASC
+NULLS LAST` — for each `placementKey` group, Postgres keeps only the
+first row in `ORDER BY` order, and a non-null `country_id` always sorts
+before a `NULL` one under `NULLS LAST`, so the country-specific row wins
+whenever both exist and are active.
+
+Verified: migration up/down/up on both dev and test databases; clean
+build and lint; the full 423-test suite (18 new in `tests/ads.test.ts`)
+passing three consecutive runs; `npm audit` clean; `gitleaks` clean;
+proven to actually catch two real bugs by temporarily (a) flipping the
+`DISTINCT ON` resolution query's `NULLS LAST` to `NULLS FIRST` and
+watching the exact override-preference test fail with the global
+placement returned instead of the country-specific one, and (b) dropping
+the partial unique index and watching the exact duplicate-global-placement
+test wrongly succeed with `201` instead of `409`, in both cases restoring
+immediately and confirming a byte-identical diff against the pre-bug
+backup; and a live-server run against a running compiled server — a
+staged global placement created inactive, a country-specific active
+override created for a real country, and `GET /v1/ads/config` for that
+country correctly resolving to the override, not the global default — all
+live test data deleted afterward.
+
 ### OWASP API Security Top 10 audit (Step 58 continued)
 
 Following the CI/monitoring work above, this backend was audited against
