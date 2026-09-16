@@ -75,10 +75,12 @@ service.
 | Audio playback | `just_audio` + `audio_service` + `audio_session` (+ `audio_service_win` on Windows) | See Section 8 — sourced there in detail. |
 | On-device speech-to-text | `speech_to_text` (platform STT) or a fully offline engine (`whisper_kit` / `flutter_whisper.cpp` / a Vosk-backed package) | Already sourced in `docs/ARCHITECTURE_PLAN.md` footnotes B/C; restated in Section 7. |
 | Image loading/caching | `cached_network_image` | Station logos and event flyers (Section 6) are remote HTTPS URLs the backend never transforms or resizes — client-side caching and responsive decoding is the client's own responsibility per the Front-End Design Direction's media-handling bar (`docs/BUILD_MANIFEST.md`). |
+| Local offline data storage | `drift` (SQLite-based, type-safe) | Backs Section 9.4's offline-first data cache (station directory, favorites, cached event listings) — genuinely relational data (a station has genres/languages, an event has a category), which is exactly Drift's strength over a plain key-value store. Sourced as the current (2026) default recommendation for structured Flutter local persistence, with Hive/Isar explicitly flagged across multiple current sources as community-maintained-only after their original author stepped back — the same "the boring, currently-supported choice over a trendier one" reasoning already applied above picking Riverpod over BLoC.[^6] |
 
 [^1]: "GoRouter is officially recommended by the Flutter team... the recommended choice for most production Flutter apps," per Flutter's own navigation documentation (docs.flutter.dev/ui/navigation) and corroborating 2026 guides (verygood.ventures/blog/routing-best-practices-in-flutter, theflutterk.it.com/blog/flutter-go-router-typed-routes-2026).
 [^2]: "For most new Flutter apps in 2026, Riverpod is the default choice; BLoC wins where strict structure and testability matter most" — per multiple current (2026) comparison sources (dev.to/mryadavgulshan/flutter-state-management-riverpod-vs-bloc-in-2026, softaims.com/blog/flutter-state-management-riverpod-bloc-2026, flutterstudio.dev/blog/bloc-vs-riverpod.html).
 [^3]: OWASP's Flutter mobile-security guidance and current 2026 sources agree: use `flutter_secure_storage` (Android Keystore / iOS Keychain-backed) for a JWT, never `shared_preferences`, which stores data in plaintext (docs.talsec.app/appsec-articles/articles/owasp-top-10-for-flutter-m3-insecure-authentication-and-authorization-in-flutter; medium.com/@rk0936626/i-found-some-best-ways-to-store-jwt-json-web-token-in-flutter-a72b93e8eba2).
+[^6]: Multiple current (2026) comparisons converge on Drift as the default for relational offline data, with Hive and Isar called out as effectively unmaintained by their original author and kept alive only by the community — "maintenance is a feature... treat Isar and original Hive as legacy you migrate off, not platforms you build on" (flutterstudio.dev/blog/offline-first-flutter-drift.html; luci-studio.com/blog/the-flutter-local-database-landscape-in-2026-a-maintenance-first-guide-fe6d267c; dinkomarinac.dev/blog/best-local-database-for-flutter-apps-a-complete-guide).
 
 **One deliberate deviation from generic 2026 JWT advice, stated explicitly so
 a future implementer doesn't "fix" it into a bug:** several sources above
@@ -785,22 +787,66 @@ than an alarming one.
 
 ### 9.4 Network loss / offline
 
-This is a live-streaming radio and events app — there is no meaningful
-"offline mode" for the two core features (a radio stream requires a live
-connection by definition; an events listing is inherently live data), so
-this client does not attempt local data caching/offline-first
-architecture for stations/events data itself. What it does need, and
-what's specified here concretely:
+**Live radio audio is, by definition, not an offline-capable feature** —
+a listener's device connects directly to a station's own live stream
+(Section 8, the Project Standard's own no-rebroadcast/no-recording rule),
+so there is no cached or stored broadcast this client could play back
+without a real connection, and it must never claim otherwise. That is the
+one hard boundary here. Everything *else* — the station directory, the
+user's own favorites, and recently-fetched event listings — is ordinary
+reference/list data with no technical reason to become unusable the
+moment connectivity drops, so this client is **offline-first for data,
+online-only for live audio**, not offline-incapable across the board:
 
+- **What's cached locally** (via `drift`, Section 2): station records
+  (name, `logoUrl`, `countryId`, genres, languages, `isActive`, last
+  known reachability from the station's own `GET /v1/stations`/
+  `/ranked` response — never re-derived or guessed client-side), the
+  signed-in user's favorited stations/events (Section 6.1/6.2), a short
+  list of recently-played station references (station id + timestamp,
+  purely a client-side "recently played" shelf — distinct from the
+  server-side `listening_history` table, which this client already
+  reports to separately per Section 6), event listings with their dates/
+  locations/categories, and the small reference lookups Section 6.4
+  already specifies session-caching for. Every write to this local cache
+  happens as a side effect of a successful API response — it is a cache
+  of what the backend has already confirmed, never a client-invented
+  guess, and never anything to do with a station's actual audio stream.
+- **Offline behavior**: with no connection, the station directory,
+  favorites, and event listings still render from the local cache
+  (clearly, not indistinguishably from a live view — see the banner
+  below), a station/event detail screen shows its last-known cached
+  metadata, and the mini-player/player screen for any station shows a
+  clear "an internet connection is required to listen live" state rather
+  than a spinner that never resolves or, worse, a misleading "playing"
+  state with no actual audio. A persistent, dismissible banner while
+  offline states plainly that browsing is from cached data and a
+  connection is needed to listen live, with a manual retry/reconnect
+  action; the client never auto-hides this banner without confirming
+  connectivity has actually returned.
+- **What the "no connection" state distinguishes**, since these are
+  genuinely different situations a user needs different information
+  about: cached data being shown while the device itself has no network
+  (this section); a specific station's own stream being unreachable
+  while the device is otherwise online (Section 8.3's fallback chain —
+  the device has connectivity, the station doesn't); and a stale cache
+  that hasn't refreshed in a long time, surfaced as a "last updated
+  [time]" label on cached list views so a long-offline user isn't misled
+  into thinking a week-old station list is current.
 - **Connectivity-aware UI, not a silent hang**: every list screen's
-  loading state (Section 3.2's `AsyncValue`) distinguishes "still
-  loading" from "failed — no connection," with a visible retry action on
-  the latter, rather than an indefinite spinner.
+  loading state (Section 3.2's `AsyncValue`) distinguishes "showing
+  cached data — still refreshing," "showing cached data — offline," and
+  "failed, no cache available yet" (a first-ever launch with no
+  connection), each with an appropriate visible affordance rather than
+  an indefinite spinner in any of the three cases.
 - **Playback resilience**: a genuine network drop mid-playback is treated
   identically to Section 8.3's stream-failure handling — if a ranked list
-  is the active source, fall through automatically; a network drop during
-  a direct station play shows a "connection lost — tap to retry" state on
-  the mini-player rather than silently going quiet.
+  is the active source, fall through automatically once connectivity
+  returns; a network drop during a direct station play shows a
+  "connection lost — tap to retry" state on the mini-player rather than
+  silently going quiet. Reconnection is a real retry against the
+  station's live stream, exactly as before this correction — never a
+  fallback to a cached recording, since none exists.
 - **The voice sheet** (Section 3.3) should detect a failed
   `POST /v1/voice/command` call caused by no connectivity (as distinct
   from the backend's own well-formed `not_found`/`unrecognized`
@@ -810,8 +856,10 @@ what's specified here concretely:
   genres, languages, event categories) are small and effectively static —
   caching them for the app session (already specified) means a
   connectivity blip after the first successful fetch doesn't block every
-  filter dropdown in the app, even though the underlying live lists
-  (stations, events) still require a live connection to actually browse.
+  filter dropdown in the app. Unlike the station/event *directory* data
+  above, these session-only lists don't need Drift's persistence — they're
+  small enough, and re-fetched often enough (once per app launch), that
+  Riverpod's own in-memory provider caching is sufficient on its own.
 
 ## 10. Accessibility
 
@@ -861,6 +909,17 @@ target platform become available, Steps 39–50 are considered actually
 - Accessibility (Section 10) is checked with each platform's own
   accessibility inspector (Android Accessibility Scanner / Xcode
   Accessibility Inspector / Windows Narrator), not just visually.
+- **Offline data mode verified** (Section 9.4): with the station
+  directory, favorites, and event listings already populated once,
+  disconnect the device's network entirely and confirm the cached
+  station directory, favorites, and cached event information remain
+  accessible and clearly marked as cached, while attempting to play any
+  station correctly reports that an internet connection is required —
+  never a silent hang, and never audio that plays anyway. This is
+  deliberately not "kill network, app still works" as an unqualified
+  claim — a live radio app cannot honestly claim that for its actual
+  audio, only for the cached data around it, and the acceptance check
+  above is written to prove exactly that distinction, not paper over it.
 
 Until then, this document stands as the complete brief — not a partial
 one — for exactly that work.
