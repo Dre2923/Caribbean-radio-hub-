@@ -19,6 +19,7 @@ import {
   InvalidAdPlacementError,
   type AdEventType,
 } from "../repositories/adEventsRepository.js";
+import { listAdPerformanceDaily } from "../repositories/adPerformanceRepository.js";
 import { errorResponseSchema, idSchema } from "../schemas/common.js";
 import {
   adPlacementSchema,
@@ -29,6 +30,8 @@ import {
   createAdEventBodySchema,
   adPlacementReportRowSchema,
   adPlacementReportQuerySchema,
+  adPerformanceDailyRowSchema,
+  adPerformanceDailyQuerySchema,
 } from "../schemas/ads.js";
 
 function badRequest(reply: FastifyReply, message: string) {
@@ -99,6 +102,12 @@ interface AdPlacementReportQuery {
   countryId?: number;
   startsAfter?: string;
   startsBefore?: string;
+}
+
+interface AdPerformanceDailyQuery {
+  placementId?: number;
+  startDate?: string;
+  endDate?: string;
 }
 
 export async function adsRoutes(app: FastifyInstance): Promise<void> {
@@ -488,6 +497,40 @@ export async function adsRoutes(app: FastifyInstance): Promise<void> {
       const { countryId, startsAfter, startsBefore } = request.query;
       const report = await getAdPlacementReport({ countryId, startsAfter, startsBefore });
       return { report };
+    },
+  );
+
+  app.get<{ Querystring: AdPerformanceDailyQuery }>(
+    "/admin/ads/performance-daily",
+    {
+      preHandler: [app.authenticate, app.requireAdmin],
+      schema: {
+        description:
+          "Step 62: the precomputed daily performance rollup (src/ads/" +
+          "adPerformanceRollupWorker.ts) - one row per placement per UTC calendar day " +
+          "that had at least one recorded event. This is a cheap historical snapshot, " +
+          "not a replacement for GET /v1/admin/ads/reports's own real-time totals: a " +
+          "placement/date combination with no row here means zero impressions and zero " +
+          "clicks that day, not missing data. Requires an admin account. Optional " +
+          "placementId/startDate/endDate filters.",
+        tags: ["ads"],
+        security: [{ bearerAuth: [] }],
+        querystring: adPerformanceDailyQuerySchema,
+        response: {
+          200: {
+            type: "object",
+            properties: { rollup: { type: "array", items: adPerformanceDailyRowSchema } },
+            required: ["rollup"],
+          },
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: AdPerformanceDailyQuery }>) => {
+      const { placementId, startDate, endDate } = request.query;
+      const rollup = await listAdPerformanceDaily({ placementId, startDate, endDate });
+      return { rollup };
     },
   );
 }

@@ -166,3 +166,29 @@ export const adPlacementReportQuerySchema = {
     startsBefore: { type: "string", format: "date-time" },
   },
 } as const;
+
+// Step 62: the precomputed daily rollup - see
+// repositories/adPerformanceRepository.ts for why a row's absence for a
+// given placement/date means real zero, not missing data.
+export const adPerformanceDailyRowSchema = {
+  type: "object",
+  properties: {
+    placementId: { type: "integer" },
+    placementKey: { type: "string" },
+    date: { type: "string", format: "date" },
+    impressions: { type: "integer" },
+    clicks: { type: "integer" },
+    updatedAt: { type: "string", format: "date-time" },
+  },
+  required: ["placementId", "placementKey", "date", "impressions", "clicks", "updatedAt"],
+} as const;
+
+export const adPerformanceDailyQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    placementId: idSchema,
+    startDate: { type: "string", format: "date" },
+    endDate: { type: "string", format: "date" },
+  },
+} as const;

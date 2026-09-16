@@ -2756,6 +2756,145 @@ error further downstream) instead of the correct `413`, restoring
 immediately and confirming a byte-identical diff against the pre-change
 file.
 
+## Background Update Workers (Step 62)
+
+Two more independent scheduled jobs, alongside the three that already
+exist (the email outbox worker, Step 07; the stream health-check worker,
+Step 20; the auto-deactivation worker, Step 23). Per
+`docs/ARCHITECTURE_PLAN.md`'s own reasoning for scheduling this step this
+late, both are real candidates that only became buildable once their own
+feature buckets (51-54 User Features, 56-57 Advertising) existed to build
+on top of — this step didn't invent new features to justify a worker,
+it built the two workers those already-built features were missing.
+
+### The User Features digest
+
+A weekly per-user push notification summarizing upcoming approved events
+in that user's own profile country (`users.country_id`) —
+`src/notifications/weeklyEventsDigestWorker.ts`. Reuses Step 53's
+`PushProvider` infrastructure and the identical fan-out/error-isolation
+shape Step 54's `notifyFavoriteStationAvailabilityChange` already
+established (per-recipient try/catch, a dead token cleaned up via
+`InvalidPushTokenError` rather than blocking the rest of the batch).
+
+Two new columns on the existing `notification_preferences` table (Step 54)
+rather than a new table, since this is still a 1:1 per-user preference —
+migration `1700000026000_notification_preferences_weekly_digest`:
+
+- `weeklyEventsDigest` (boolean, **default false**) — the deliberate
+  opposite of `favoriteStationAvailabilityChanges`'s own default-true.
+  That field is a transactional notice about something the user already
+  explicitly opted into (favoriting a station); a weekly digest is
+  unsolicited, recurring content nobody asked for yet — real industry
+  practice (CAN-SPAM's own opt-in guidance for non-transactional digests,
+  and every major app's own "weekly summary" toggle) defaults that kind of
+  notification to off. Exposed on the existing
+  `GET`/`PATCH /v1/me/notification-preferences` routes, growing that
+  schema the same additive way it already grows for any new preference.
+- `lastDigestCheckAt` (nullable timestamp, internal-only — not exposed on
+  the notification-preferences routes) — deliberately named "check," not
+  "sent": the worker updates it every time it evaluates a user for that
+  week's digest, whether or not there actually was anything upcoming worth
+  pushing. Naming it "sent" would be misleading for the (common) case of a
+  user opted in but with nothing upcoming in their country that week. This
+  is the same "mark this considered so the next tick doesn't redundantly
+  re-evaluate the same user" reasoning `autoDeactivationWorker`'s
+  in-memory `evaluationInProgress` flag already uses, just persisted
+  per-user in the database instead of a single process-wide flag.
+
+The worker ticks every 6 hours (`WEEKLY_EVENTS_DIGEST_INTERVAL_MS`),
+re-querying (`listUsersDueForWeeklyDigest`) for every user with
+`weeklyEventsDigest = true`, a non-null profile country, and a
+`lastDigestCheckAt` either `NULL` or more than 7 days old
+(`WEEKLY_DIGEST_INTERVAL_DAYS`). A 6-hour tick against a 7-day threshold is
+deliberately much tighter than the digest period itself — the identical
+shape `autoDeactivationWorker` already uses (1-hour ticks against a 48-hour
+window) — so a user becomes due within hours of crossing the 7-day mark
+rather than waiting on one single weekly tick to land on exactly them. For
+each due candidate, the worker asks the real, already-tested
+`GET /v1/events`-equivalent filter (`listEvents({ countryId, status:
+"approved", upcomingOnly: true, limit: 5 })`) — a digest can never name an
+event a listener couldn't also find (or use) themselves — and pushes a
+summary naming up to 5 of the soonest, with the real total upcoming count
+if there are more. A user with zero upcoming events in their country still
+gets marked checked (no push sent), and a user's own account with no
+profile country set is silently never a candidate at all (there is
+nothing to summarize without one) — no error, just no digest.
+
+### The Advertising performance rollup
+
+A precomputed daily performance snapshot —
+`repositories/adPerformanceRepository.ts`,
+`src/ads/adPerformanceRollupWorker.ts`, migration
+`1700000027000_ad_performance_daily`. One row per `(placementId, date)`
+that actually had at least one recorded `ad_event` that UTC calendar day —
+not one row per placement per day regardless of activity, which would grow
+with the size of the catalog independent of real ad traffic, the opposite
+of what a rollup table is for. A `(placement, date)` combination with no
+row simply means zero impressions and zero clicks that day, documented
+explicitly on this table's own read path and on the new
+`GET /v1/admin/ads/performance-daily` (admin-only) endpoint this step
+adds.
+
+This is deliberately **not** a replacement for Step 57's
+`GET /v1/admin/ads/reports`, which still correctly answers real-time
+totals directly from `ad_events` without this table at all. This table's
+own, different value: a snapshot that stays cheap to query as `ad_events`
+grows unboundedly over months/years of raw impression/click rows, and
+remains a stable historical record even if a future step ever
+prunes/archives old raw events — the same "keep a durable summary, not
+just the raw log" reasoning real ad/analytics platforms use daily rollup
+tables for.
+
+The worker (`AD_PERFORMANCE_ROLLUP_INTERVAL_MS`, default 24h) always rolls
+up the *previous* completed UTC calendar day (`yesterdayUtcDate()`), never
+the still-in-progress current one — a calendar day's totals never change
+once that day is over, so there's no reason to compute it more than once,
+and computing "today" would need to be redone later anyway while
+momentarily showing a partial count that looks final but isn't. The
+write (`upsertAdPerformanceDaily`) is an idempotent
+`ON CONFLICT (placement_id, date) DO UPDATE` — a redundant extra run
+within the same day (a process restart, an overlapping tick) is harmless,
+overwriting with freshly recomputed real counts rather than double-
+counting or erroring.
+
+Both new workers are wired into `src/index.ts`'s startup and the existing
+graceful-shutdown sequence (Step 60) identically to the three pre-existing
+background workers — started independently of the HTTP server, stopped on
+the same `SIGINT`/`SIGTERM` path.
+
+Verified: migrations up/down/up on both dev and test databases; clean
+build and lint; the full 458-test suite (14 new, across
+`tests/weeklyEventsDigest.test.ts`, `tests/ads.test.ts`, and
+`tests/notificationPreferences.test.ts`) passing three consecutive runs;
+`npm audit` clean (no new dependencies added this step); proven to
+actually catch four real bugs by temporarily:
+
+1. Widening the rollup's own UTC day-boundary query by an extra 2 days and
+   watching the boundary test wrongly count 3 impressions instead of 2.
+2. Changing the rollup's upsert to `ON CONFLICT (placement_id, date) DO
+   NOTHING` and watching the idempotency test wrongly stay stuck at the
+   stale pre-rerun count after a second, genuinely new event arrived.
+3. Flipping the digest candidate query's cutoff comparison (`<` to `>`)
+   and watching a user checked *more* recently than the cutoff wrongly
+   remain a candidate.
+4. Removing the digest worker's own `countryId` filter from its
+   `listEvents` call and watching the cross-country isolation test wrongly
+   send a push naming a different country's event.
+
+In every case, restoring the fix immediately and confirming a
+byte-identical diff against the pre-bug version. Also verified live
+against a running compiled server: a real user opted into the weekly
+digest, with a real upcoming approved event created in their own profile
+country, received a real push (logged via `ConsoleNotificationProvider` —
+no `FCM_SERVICE_ACCOUNT_JSON` is configured in this environment) once
+`runWeeklyEventsDigestSweep` was invoked directly against the running
+server's own database; and real, deliberately backdated `ad_events` rows
+were correctly rolled up by `runAdPerformanceRollup` into
+`ad_performance_daily`, with `GET /v1/admin/ads/performance-daily`
+returning exactly the expected counts. All live test data deleted
+afterward.
+
 ## Security baseline
 
 - **Security headers**: `@fastify/helmet` is registered globally (CSP, HSTS,

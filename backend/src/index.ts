@@ -6,6 +6,8 @@ import { createEmailProvider } from "./email/provider.js";
 import { startEmailOutboxWorker } from "./email/outboxWorker.js";
 import { startHealthCheckWorker } from "./stationHealth/healthCheckWorker.js";
 import { startAutoDeactivationWorker } from "./stationHealth/autoDeactivationWorker.js";
+import { startWeeklyEventsDigestWorker } from "./notifications/weeklyEventsDigestWorker.js";
+import { startAdPerformanceRollupWorker } from "./ads/adPerformanceRollupWorker.js";
 
 const app = buildApp();
 
@@ -26,6 +28,13 @@ const stopHealthCheckWorker = startHealthCheckWorker();
 // indefinitely waiting for an admin to notice.
 const stopAutoDeactivationWorker = startAutoDeactivationWorker();
 
+// Step 62: two more independent background workers, the first real
+// candidates docs/ARCHITECTURE_PLAN.md identified for this bucket now
+// that Steps 51-57 exist to build on. Same independent-of-the-HTTP-server,
+// stopped-on-the-same-graceful-shutdown-path discipline as the three above.
+const stopWeeklyEventsDigestWorker = startWeeklyEventsDigestWorker();
+const stopAdPerformanceRollupWorker = startAdPerformanceRollupWorker();
+
 // Fastify's own logger already announces the listening address(es) once
 // the server is up, so there's no need to log that again here.
 app
@@ -40,6 +49,8 @@ async function shutdown(signal: string): Promise<void> {
   stopEmailOutboxWorker();
   stopHealthCheckWorker();
   stopAutoDeactivationWorker();
+  stopWeeklyEventsDigestWorker();
+  stopAdPerformanceRollupWorker();
   // app.close() first, not pool.end() first - it drains in-flight HTTP
   // requests before resolving, and those requests still need a working
   // database connection to finish. Only once every request has actually

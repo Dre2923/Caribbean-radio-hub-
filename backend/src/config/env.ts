@@ -224,6 +224,24 @@ export const env = {
   stationAutoDeactivationIntervalMs: Number(
     process.env.STATION_AUTO_DEACTIVATION_INTERVAL_MS ?? 3_600_000,
   ),
+  // Step 62: how often the weekly events digest worker
+  // (src/notifications/weeklyEventsDigestWorker.ts) re-evaluates which
+  // users are due for their next digest - see that worker's own comment
+  // for why this is deliberately much shorter than the 7-day digest window
+  // itself. 6 hours by default.
+  weeklyEventsDigestIntervalMs: Number(
+    process.env.WEEKLY_EVENTS_DIGEST_INTERVAL_MS ?? 21_600_000,
+  ),
+  // Step 62: how often the ad performance rollup worker
+  // (src/ads/adPerformanceRollupWorker.ts) aggregates the previous UTC
+  // day's ad_events into ad_performance_daily. A calendar day's totals
+  // never change once that day is over, so there's no benefit to running
+  // this more than about once a day - 24 hours by default. An idempotent
+  // upsert (ON CONFLICT (placement_id, date) DO UPDATE) makes a redundant
+  // extra run within the same day harmless either way.
+  adPerformanceRollupIntervalMs: Number(
+    process.env.AD_PERFORMANCE_ROLLUP_INTERVAL_MS ?? 86_400_000,
+  ),
   frontendUrl: frontendUrl(),
   adminEmails: parseAdminEmails(process.env.ADMIN_EMAILS),
   fcm: parseFcmConfig(),

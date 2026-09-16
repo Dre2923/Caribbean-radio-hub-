@@ -2,6 +2,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { setUserRole } from "../src/repositories/usersRepository.js";
+import { runAdPerformanceRollup, yesterdayUtcDate } from "../src/ads/adPerformanceRollupWorker.js";
 
 afterAll(async () => {
   await pool.end();
@@ -837,6 +838,173 @@ describe("GET /v1/admin/ads/reports (Step 57)", () => {
       .json()
       .report.find((r: { placementId: number }) => r.placementId === placementId);
     expect(rowInPast).toMatchObject({ impressions: 1 });
+
+    await app.close();
+  });
+});
+
+describe("yesterdayUtcDate (Step 62)", () => {
+  it("returns the previous UTC calendar day, correctly crossing a month/year boundary", () => {
+    expect(yesterdayUtcDate(new Date("2024-01-02T05:00:00Z"))).toBe("2024-01-01");
+    // 2024 is a leap year - the day before March 1st is Feb 29th, not the
+    // 28th a naive "just subtract 24h in local time" calculation could get
+    // wrong.
+    expect(yesterdayUtcDate(new Date("2024-03-01T00:00:00Z"))).toBe("2024-02-29");
+    expect(yesterdayUtcDate(new Date("2025-01-01T12:00:00Z"))).toBe("2024-12-31");
+  });
+});
+
+describe("Ad performance rollup (Step 62)", () => {
+  // A fixed, arbitrary past date rather than "yesterday" - keeps every
+  // assertion in this block stable regardless of what day this suite
+  // happens to run on, and isolated from any other test's own ad_events.
+  const ROLLUP_DATE = "2024-06-15";
+
+  async function backdateEvent(
+    placementId: number,
+    eventType: "impression" | "click",
+    isoTimestamp: string,
+  ): Promise<void> {
+    await pool.query(
+      "INSERT INTO ad_events (placement_id, event_type, created_at) VALUES ($1, $2, $3)",
+      [placementId, eventType, isoTimestamp],
+    );
+  }
+
+  it("aggregates only events within the target UTC day, upserting real counts", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "rollup-aggregate");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("rollup-aggregate"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    // Two impressions and one click inside the target day...
+    await backdateEvent(placementId, "impression", `${ROLLUP_DATE}T00:00:01Z`);
+    await backdateEvent(placementId, "impression", `${ROLLUP_DATE}T23:59:59Z`);
+    await backdateEvent(placementId, "click", `${ROLLUP_DATE}T12:00:00Z`);
+    // ...one just before and one just after the day's UTC boundary, which
+    // must NOT be counted.
+    await backdateEvent(placementId, "impression", "2024-06-14T23:59:59Z");
+    await backdateEvent(placementId, "impression", "2024-06-16T00:00:00Z");
+
+    await runAdPerformanceRollup(ROLLUP_DATE);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/performance-daily?placementId=${placementId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().rollup).toEqual([
+      expect.objectContaining({
+        placementId,
+        date: ROLLUP_DATE,
+        impressions: 2,
+        clicks: 1,
+      }),
+    ]);
+
+    await app.close();
+  });
+
+  it("is idempotent - re-running the same day's rollup overwrites rather than double-counts", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "rollup-idempotent");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("rollup-idempotent"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    await backdateEvent(placementId, "impression", `${ROLLUP_DATE}T08:00:00Z`);
+    await runAdPerformanceRollup(ROLLUP_DATE);
+
+    // A second, genuinely new event for the same day arrives, then the
+    // rollup runs again - the worker's own real production shape (a
+    // process restart or an overlapping tick re-running the same day).
+    await backdateEvent(placementId, "impression", `${ROLLUP_DATE}T09:00:00Z`);
+    await runAdPerformanceRollup(ROLLUP_DATE);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/performance-daily?placementId=${placementId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    // Exactly one row for this (placement, date) - a real ON CONFLICT
+    // upsert, never a duplicate second row from the second run.
+    expect(response.json().rollup).toHaveLength(1);
+    expect(response.json().rollup[0]).toMatchObject({ impressions: 2 });
+
+    await app.close();
+  });
+
+  it("never creates a row for a placement/date with no events that day", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "rollup-no-events");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("rollup-no-events"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    await runAdPerformanceRollup(ROLLUP_DATE);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/performance-daily?placementId=${placementId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(response.json().rollup).toEqual([]);
+
+    await app.close();
+  });
+
+  it("GET /v1/admin/ads/performance-daily requires authentication and admin role", async () => {
+    const app = buildApp();
+    const regularToken = await createRegularToken(app, "rollup-auth");
+
+    const unauthenticated = await app.inject({ method: "GET", url: "/v1/admin/ads/performance-daily" });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const nonAdmin = await app.inject({
+      method: "GET",
+      url: "/v1/admin/ads/performance-daily",
+      headers: { authorization: `Bearer ${regularToken}` },
+    });
+    expect(nonAdmin.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("filters by startDate/endDate", async () => {
+    const app = buildApp();
+    const adminToken = await createAdminToken(app, "rollup-date-filter");
+    const created = await createPlacementViaApi(app, adminToken, {
+      placementKey: uniqueKey("rollup-date-filter"),
+      adFormat: "banner",
+    });
+    const placementId = created.json().placement!.id;
+
+    await backdateEvent(placementId, "impression", "2024-06-10T00:00:00Z");
+    await backdateEvent(placementId, "impression", "2024-06-20T00:00:00Z");
+    await runAdPerformanceRollup("2024-06-10");
+    await runAdPerformanceRollup("2024-06-20");
+
+    const withinRange = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/performance-daily?placementId=${placementId}&startDate=2024-06-09&endDate=2024-06-11`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(withinRange.json().rollup.map((r: { date: string }) => r.date)).toEqual(["2024-06-10"]);
+
+    const outsideRange = await app.inject({
+      method: "GET",
+      url: `/v1/admin/ads/performance-daily?placementId=${placementId}&startDate=2024-06-01&endDate=2024-06-05`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(outsideRange.json().rollup).toEqual([]);
 
     await app.close();
   });

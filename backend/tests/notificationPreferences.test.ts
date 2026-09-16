@@ -46,7 +46,7 @@ describe("Notification preferences", () => {
     await app.close();
   });
 
-  it("defaults to favoriteStationAvailabilityChanges: true for a never-customized account", async () => {
+  it("defaults to favoriteStationAvailabilityChanges: true, weeklyEventsDigest: false for a never-customized account", async () => {
     const app = buildApp();
     const { token } = await createRegularAccount(app, "default");
 
@@ -56,7 +56,10 @@ describe("Notification preferences", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json().preferences).toEqual({ favoriteStationAvailabilityChanges: true });
+    expect(response.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: true,
+      weeklyEventsDigest: false,
+    });
 
     await app.close();
   });
@@ -72,14 +75,61 @@ describe("Notification preferences", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(patch.statusCode).toBe(200);
-    expect(patch.json().preferences).toEqual({ favoriteStationAvailabilityChanges: false });
+    expect(patch.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: false,
+      weeklyEventsDigest: false,
+    });
 
     const get = await app.inject({
       method: "GET",
       url: "/v1/me/notification-preferences",
       headers: { authorization: `Bearer ${token}` },
     });
-    expect(get.json().preferences).toEqual({ favoriteStationAvailabilityChanges: false });
+    expect(get.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: false,
+      weeklyEventsDigest: false,
+    });
+
+    await app.close();
+  });
+
+  it("updates weeklyEventsDigest independently, never resetting the other preference to its default (Step 62)", async () => {
+    const app = buildApp();
+    const { token } = await createRegularAccount(app, "digest-independent");
+
+    // Turn the pre-existing preference off first...
+    await app.inject({
+      method: "PATCH",
+      url: "/v1/me/notification-preferences",
+      payload: { favoriteStationAvailabilityChanges: false },
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    // ...then a PATCH touching only the new field must leave it exactly as
+    // it was, not reset it back to favoriteStationAvailabilityChanges'
+    // own default (true) - the merge-then-upsert contract
+    // notificationPreferencesRepository.ts's own comment documents.
+    const patch = await app.inject({
+      method: "PATCH",
+      url: "/v1/me/notification-preferences",
+      payload: { weeklyEventsDigest: true },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: false,
+      weeklyEventsDigest: true,
+    });
+
+    const get = await app.inject({
+      method: "GET",
+      url: "/v1/me/notification-preferences",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(get.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: false,
+      weeklyEventsDigest: true,
+    });
 
     await app.close();
   });
@@ -116,7 +166,10 @@ describe("Notification preferences", () => {
       url: "/v1/me/notification-preferences",
       headers: { authorization: `Bearer ${tokenB}` },
     });
-    expect(getB.json().preferences).toEqual({ favoriteStationAvailabilityChanges: true });
+    expect(getB.json().preferences).toEqual({
+      favoriteStationAvailabilityChanges: true,
+      weeklyEventsDigest: false,
+    });
 
     await app.close();
   });
@@ -164,6 +217,7 @@ describe("Notification preferences - adversarial hardening (Step 55)", () => {
     expect(unknownFieldAlone.statusCode).toBe(200);
     expect(unknownFieldAlone.json().preferences).toEqual({
       favoriteStationAvailabilityChanges: true,
+      weeklyEventsDigest: false,
     });
 
     const mixedFields = await app.inject({
@@ -177,6 +231,7 @@ describe("Notification preferences - adversarial hardening (Step 55)", () => {
     expect(mixedFields.statusCode).toBe(200);
     expect(mixedFields.json().preferences).toEqual({
       favoriteStationAvailabilityChanges: false,
+      weeklyEventsDigest: false,
     });
 
     await app.close();
