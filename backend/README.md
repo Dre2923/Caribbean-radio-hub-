@@ -3020,7 +3020,10 @@ entirely (the Flutter mobile client, Steps 39-50, which remains
 **Specified, not built** per the capability boundary verified before any
 work began).
 
-**Decision: GO**, tagged `v1.0.0-backend`.
+**Decision: GO**, designated `v1.0.0-backend` - not an actually-pushed git
+tag (this session's push credentials are scoped to the one designated
+branch; a real attempt to push the tag was rejected with `403`, documented
+in `docs/RELEASE_GATE.md` rather than routed around).
 
 ## Security baseline
 

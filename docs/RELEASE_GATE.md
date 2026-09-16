@@ -93,8 +93,15 @@ work. This backend, the Admin Dashboard, and the Voice System's backend
 half are ready to serve as the production foundation for the eventual
 Flutter client described in `docs/FLUTTER_CLIENT_SPEC.md`.
 
-**Version**: `v1.0.0-backend` (tagged at the commit this document was
-added in).
+**Version**: `v1.0.0-backend`, designated at the commit this document was
+added in. Not an actual pushed git tag: this session's push credentials
+are scoped to the one designated branch
+(`claude/caribbean-radio-build-9rr9pu`) and a real attempt to push a
+`v1.0.0-backend` tag was rejected with `403` - a real, deliberate scope
+restriction, not an oversight to route around. A maintainer with full
+repository write access can create the tag from this commit whenever they
+choose to (`git tag -a v1.0.0-backend <this-commit-sha> && git push origin
+v1.0.0-backend`).
 
 This document is a checkpoint, not a static artifact — if a future step
 reopens any area above (a new endpoint, a changed dependency, a new
