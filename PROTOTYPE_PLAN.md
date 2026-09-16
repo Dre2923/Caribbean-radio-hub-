@@ -311,6 +311,126 @@ See "EXACT NEXT STEP" below.
 
 ---
 
+## PHASE 2: EXPANDED USER-TESTABLE PROTOTYPE (started after Phase 1 approval)
+
+The user reviewed the Phase 1 slice above and asked for it to grow from
+"smallest complete vertical slice" into a broad, user-testable product
+prototype — most of the real product, not just the ranked-play-fallback
+flow — while explicitly preserving everything already built above
+unchanged. This section is written **before** any Phase 2 code, per the
+user's own required order: review real backend/spec contracts first,
+record the scope and the backend-support matrix here, then implement.
+Nothing below is invented — every "SUPPORTED" row cites the real route
+file read directly for this review; every "CLIENT-ONLY" or "NOT
+EXERCISABLE HERE" row states the real reason, not a guess.
+
+### Hard constraints carried into Phase 2 (unchanged from the user's directive)
+
+- Everything in the "PROTOTYPE STATUS: WORKING" section below stays
+  working as-is — no deletion, simplification, or regression of the
+  Phase 1 flow.
+- No new backend code. Every Phase 2 feature below uses an
+  already-built, already-tested backend route as-is.
+- No fabricated data/results. Demo content stays clearly labeled
+  `(Demo)`, same convention as Phase 1.
+- Stop and document (not invent) anywhere the backend genuinely doesn't
+  support what was asked.
+
+### Backend-support matrix (per the user's A–M feature list)
+
+| # | Feature | Backend support | Real routes (file:route) |
+|---|---|---|---|
+| A | Full station browsing/search/filter | SUPPORTED (already used in Phase 1) | `GET /v1/stations`, `/v1/stations/ranked`, `/v1/genres`, `/v1/languages` |
+| B | Authentication: register/login/logout/session restore/expired handling | SUPPORTED | `POST /v1/users` (register), `POST /v1/auth/login`, `GET /v1/me` (session restore/validate), `POST /v1/auth/password-reset/request`, `POST /v1/auth/password-reset/confirm` (`backend/src/routes/auth.ts`, `users.ts`). No refresh-token route exists anywhere in the backend — confirmed by reading `auth.ts` in full — so "expired handling" is client-side only: any `401` clears the stored token and returns to signed-out, per `docs/FLUTTER_CLIENT_SPEC.md` §9.2, exactly as this client must too. |
+| C | Favorites (stations + events) | SUPPORTED | `PUT/DELETE /v1/me/favorites/stations/:id`, `PUT/DELETE /v1/me/favorites/events/:id`, `GET /v1/me/favorites/{stations,events}` (`backend/src/routes/favorites.ts`) — auth-gated, idempotent writes. |
+| D | Listening history | SUPPORTED | `POST/GET/DELETE /v1/me/listening-history` (`backend/src/routes/listeningHistory.ts`) — auth-gated. |
+| E | Profile / notification preferences | SUPPORTED for profile + preference *storage*. PARTIAL for push notifications themselves. | `GET/PATCH/DELETE /v1/me`, `POST /v1/me/password` (`backend/src/routes/me.ts`); `GET/PATCH /v1/me/notification-preferences` (`backend/src/routes/notificationPreferences.ts`). These store a preference flag only — there is no FCM/APNs push infrastructure reachable from a browser tab, and none is claimed. The UI will let a user set/read the real preference (a real, persisted API value), honestly labeled as "controls whether the mobile app would send you notifications" rather than implying this web tab itself will receive push. |
+| F | Authenticated event submission | SUPPORTED | `POST /v1/events` requires only `app.authenticate` (not admin) — confirmed by reading `backend/src/routes/events.ts` during Phase 1 build. A signed-in user can submit a real event through the real validation path. |
+| G | Voice command interface | SUPPORTED for the backend contract; PARTIAL for real microphone capture in this environment | `POST /v1/voice/command` (`backend/src/routes/voice.ts`, `backend/src/schemas/voice.ts`) — 8 intents, always 200 except 400 on empty text, auth-required, 30/min. Per `docs/FLUTTER_CLIENT_SPEC.md` §7.1, speech-to-text is explicitly an on-device/client boundary — the backend only ever receives already-recognized text, never audio. In a browser this maps to the Web Speech API (`webkitSpeechRecognition`), which is present in Chromium but performs its actual recognition via a live call to Google's speech servers — a real external host this sandbox's egress allowlist has already been confirmed (Phase 1) to block for arbitrary hosts. This will be investigated directly (not assumed) during implementation: if the mic path errors out under this sandbox's network policy, the UI will offer a real, honest typed-text command box wired to the same real `POST /v1/voice/command` endpoint (so the actual backend contract and all 8 intents are genuinely exercisable and testable), with the microphone button visibly present but labeled as unverified/best-effort in this environment rather than hidden or faked. |
+| H | Ad surfaces | SUPPORTED for placement config + first-party impression/click recording; NO real ad creative or mediation SDK exists or is claimed | `GET /v1/ads/config` (public), `POST /v1/ads/events` (public, 60/min) (`backend/src/routes/ads.ts`). This backend deliberately never serves or hosts creative (`docs/ARCHITECTURE_PLAN.md`'s scoped "configuration only, never ad serving" role) — a real deployment would hand `androidAdUnitId`/`iosAdUnitId` to a real mobile mediation SDK (AdMob etc.), which has no browser/web equivalent here. The prototype will fetch the real `GET /v1/ads/config` for the selected country and, only if an active placement genuinely exists, render one clearly labeled "Sponsored" placeholder slot and fire real `POST /v1/ads/events` impression/click calls against it — real API calls, honestly-labeled placeholder creative, never fabricated ad content presented as real. |
+| I | Offline/connectivity handling + minimal service worker | Phase 1's `localStorage` data-cache stays as-is (client-only, already working). App-shell offline (surviving a full reload while offline) is investigated fresh in Phase 2: a minimal, hand-written service worker (no new heavy dependency such as `vite-plugin-pwa`) that caches only the built static app shell (JS/CSS/HTML), never API responses (`useCachedQuery`'s `localStorage` layer already owns that) and never claims offline audio. | N/A (client-only) |
+| J | Error/edge-state handling | Client-only, extended to every new screen this phase adds, same standard as Phase 1's `9.1`/`9.2`/`9.3` handling (single error envelope, global 401 handling, friendly 429 message). | N/A (client-only) |
+| K | Accessibility | Client-only pass; will be reported honestly (WORKING/PARTIAL/MISSING per control actually tested), never claimed as a certification. | N/A (client-only) |
+| L | Responsive testing | Client-only verification at phone/tablet/desktop viewports via Playwright's real viewport emulation, same rigor as Phase 1's live-browser checks. | N/A (client-only) |
+| M | Design/premium consumer bar | Carried forward unchanged from Phase 1 (WCAG-verified palette, Caribbean visual identity, playback-centric layout) — new screens must match it, not introduce a second visual language. | N/A (client-only) |
+
+### Token storage: a deliberate deviation from `admin-dashboard`, documented
+
+`admin-dashboard` stores its JWT in `sessionStorage` on purpose (an
+admin back-office, cleared on tab close — see `admin-dashboard/src/api/
+client.ts`'s own comment). `listener-web` is a consumer app, and users of
+a consumer radio app reasonably expect to stay signed in across closing a
+tab, the same way the real Flutter client would persist a session. This
+prototype stores its token in `localStorage` instead — a deliberate,
+documented choice, not an oversight or a copy-paste of the admin
+pattern. `GET /v1/me` still remains the real source of truth on every
+app load exactly as `admin-dashboard`'s `AuthProvider` already models it
+(a stored token is only ever provisionally trusted); a `401` anywhere
+clears it and returns to signed-out, per §9.2 above.
+
+### What is explicitly NOT attempted, and why (stop-and-document, not invent)
+
+- **Real push notifications reaching this browser tab** — no backend
+  push-delivery infrastructure exists to receive (this repo's own scope
+  per `docs/ARCHITECTURE_PLAN.md` stops at storing the preference); only
+  the real preference toggle is built.
+- **Real external ad creative rendering** — no ad backend/mediation SDK
+  exists to call from a browser; only the real config-fetch +
+  event-recording contract is exercised, behind an honest placeholder.
+- **Verified live microphone speech recognition** — dependent on this
+  sandbox's network egress, which is investigated and reported truthfully
+  rather than assumed either way; the real backend voice contract is
+  fully exercisable regardless via the typed-text fallback.
+- **`drift`/SQLite offline cache** — unchanged from Phase 1's own "Known
+  limitations": the web-appropriate substitute is `localStorage` for data
+  and (new in Phase 2) a minimal service worker for the app shell, not a
+  port of the Flutter-specific storage layer.
+
+### Phase 2 test checklist (to be executed live once implementation is complete — task tracked separately)
+
+Status for every row below is filled in only after genuine exercise
+against the real running stack, using this project's existing
+WORKING / PARTIAL / MISSING / NEEDS VERIFICATION / NOT APPLICABLE
+vocabulary — see the "CURRENT TEST RESULTS" table below (Phase 1) for
+the standard this continues. Not filled in yet — implementation has not
+started.
+
+1. Register a new account (real, valid input).
+2. Register with an already-used email (anti-enumeration-consistent error).
+3. Register with invalid input (weak password / malformed email).
+4. Log in with correct credentials.
+5. Log in with wrong password (generic error, no enumeration).
+6. Log out.
+7. Session restore on page reload while signed in.
+8. Expired/invalid token handling (forced 401) routes to signed-out.
+9. Password reset request + confirm flow.
+10. View and edit profile (display name, etc.).
+11. Change password (and confirm old sessions are invalidated).
+12. Delete account (real, confirmed destructive flow — tested on disposable demo data only).
+13. Favorite a station; confirm it persists via `GET /v1/me/favorites/stations`.
+14. Unfavorite a station (idempotent DELETE).
+15. Favorite an event; confirm it persists.
+16. Unfavorite an event.
+17. View listening history after playing a station.
+18. Clear listening history.
+19. View and edit notification preferences.
+20. Submit a new event while signed in; confirm it appears via the real API.
+21. Attempt event submission while signed out (routed to sign-in, not a silent failure).
+22. Voice command: typed-text path, one instance of each of the 8 real intents.
+23. Voice command: microphone path (report actual result, working or not, honestly).
+24. Ad slot: real `GET /v1/ads/config` call renders (or honestly shows nothing, if no active placement exists for the demo country).
+25. Ad slot: real impression/click event POSTed and confirmed (e.g. via admin report endpoint or direct verification).
+26. Offline: reload the app shell while offline (service worker), vs. Phase 1's already-confirmed in-app cached-data browsing.
+27. 401 mid-session (e.g. after a forced password change) routes cleanly to sign-in, not a crash.
+28. 429 (rapid-fire a rate-limited action) shows the friendly message, not a raw error.
+29. Responsive layout: phone viewport (real Playwright emulation, e.g. 390×844).
+30. Responsive layout: tablet viewport (e.g. 820×1180).
+31. Responsive layout: desktop viewport (already implicitly covered by Phase 1, re-confirmed here).
+32. Keyboard-only navigation across the new authenticated screens.
+33. Accessible names/roles on every new interactive control (favorites buttons, profile form fields, voice input).
+
+---
+
 ## PROTOTYPE STATUS: WORKING
 
 Built, live-verified against the real running backend + a real browser
