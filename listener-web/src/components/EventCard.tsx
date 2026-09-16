@@ -20,7 +20,7 @@ export function EventCard({ event }: { event: Event }) {
   return (
     <Link
       to={`/events/${event.id}`}
-      className="flex items-start gap-4 rounded-xl border border-ocean-100 bg-white p-4 shadow-sm transition hover:border-ocean-400 hover:shadow-md"
+      className="flex min-w-0 items-start gap-4 rounded-xl border border-ocean-100 bg-white p-4 shadow-sm transition hover:border-ocean-400 hover:shadow-md"
     >
       <MediaAvatar src={event.imageUrl} label={event.title} className="h-16 w-16 shrink-0 rounded-lg text-lg" />
       <div className="min-w-0 flex-1">

@@ -27,7 +27,12 @@ function ProfileDetailsSection() {
     setMessage(null);
     setSubmitting(true);
     try {
-      await updateProfile({ displayName, countryId });
+      // PATCH /v1/me's countryId field is idSchema (a positive integer) -
+      // it can be omitted, but not sent as null (this user simply never
+      // set one at registration). Found live: submitting `countryId:
+      // null` here got a real 400 ("must be >= 1") - only include it
+      // when there's an actual id to send.
+      await updateProfile(countryId !== null ? { displayName, countryId } : { displayName });
       await refreshUser();
       setMessage("Profile updated.");
     } catch (err) {

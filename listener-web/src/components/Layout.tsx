@@ -49,7 +49,7 @@ export function Layout() {
               </>
             )}
           </nav>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <CountrySelect countryId={countryId} onChange={setCountryId} />
             {status === "signed-in" ? (
               <div className="flex items-center gap-2">

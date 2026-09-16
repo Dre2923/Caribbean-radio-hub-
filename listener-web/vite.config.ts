@@ -27,14 +27,15 @@ export default defineConfig(({ mode }) => {
     ? { cert: readFileSync(certPath), key: readFileSync(keyPath) }
     : undefined;
 
+  // `vite preview` (serving the real production dist/ build, needed to
+  // test public/sw.js - a service worker registers only in a production
+  // build, see main.tsx's own comment) reads its own `preview` config
+  // block, not `server` - without this it would 404 every /v1/ call.
+  const proxy = { "/v1": env.VITE_API_PROXY_TARGET ?? "http://localhost:3000" };
+
   return {
     plugins: [react(), tailwindcss()],
-    server: {
-      port: 5174,
-      https,
-      proxy: {
-        "/v1": env.VITE_API_PROXY_TARGET ?? "http://localhost:3000",
-      },
-    },
+    server: { port: 5174, https, proxy },
+    preview: { port: 4174, https, proxy },
   };
 });
